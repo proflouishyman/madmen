@@ -1,0 +1,4 @@
+# OAuth client secrets (Google)
+docs/client_secret_*.json
+**/client_secret_*.json
+*.apps.googleusercontent.com.json
