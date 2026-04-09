@@ -57,3 +57,23 @@ Solution
 Ran an immediate Maxwell 12-month historical ingestion pass and added cron `gmail-backfill-12m-20m` for recurring quota-safe continuation. Added Polly cron `ingestion-watch-15m` so orchestration snapshots and urgent queue refresh continue unattended.
 Notes
 Backfill and orchestration now continue automatically in read-only mode with explicit no-send constraints.
+
+[2026-04-09] - Model Routing Drifted To Local Primary
+Problem
+The active default model had drifted to `ollama/qwen3.5:27b` with Codex no longer primary, conflicting with desired rollout policy.
+Root Cause
+Model defaults in OpenClaw config were changed earlier during experimentation, and fallback settings were inconsistent across update attempts.
+Solution
+Reset model routing to `openai-codex/gpt-5.3-codex` as primary and `ollama/gemma4:26b` as fallback. Verified via `openclaw models status --json` and updated operational metrics collection to continuously report model routing state.
+Notes
+`gemma4:27b` is not available in local Ollama inventory on this machine; `gemma4:26b` is the closest installed Gemma 4 model.
+
+[2026-04-09] - Polly Turn Latency/Timeout Under Session Lock Contention
+Problem
+Polly feature-latency check intermittently timed out and fell back after gateway timeout.
+Root Cause
+Polly session file lock contention (`*.jsonl.lock`) blocked timely session writes, causing repeated lane timeout errors during turn execution.
+Solution
+Added automated metrics capture to detect this regression (`scripts/collect_openclaw_metrics.sh`) and recorded lock-based failure evidence in runtime metrics reports for operational follow-up.
+Notes
+This is currently observable as high Polly latency and occasional non-zero return code in metrics snapshots.

@@ -2,3 +2,11 @@
 docs/client_secret_*.json
 **/client_secret_*.json
 *.apps.googleusercontent.com.json
+
+# Local OpenClaw backup archives
+*-openclaw-backup.tar.gz
+
+# Runtime snapshot/symlink hygiene
+runtime_snapshots/latest
+runtime_snapshots/*/sensitive/
+runtime_metrics/latest
