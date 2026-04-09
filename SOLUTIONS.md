@@ -77,3 +77,13 @@ Solution
 Added automated metrics capture to detect this regression (`scripts/collect_openclaw_metrics.sh`) and recorded lock-based failure evidence in runtime metrics reports for operational follow-up.
 Notes
 This is currently observable as high Polly latency and occasional non-zero return code in metrics snapshots.
+
+[2026-04-09] - Cron Stability Regression In Ingestion/Outlook/Rex Loops
+Problem
+Three core unattended cron flows became unreliable: Polly ingestion-watch timed out, Otto sweep intermittently failed to write sweep logs, and Rex backfill showed delivery-path errors despite successful sync work.
+Root Cause
+Cron payloads were too verbose for isolated runs under model/lock pressure, Otto used a relative log-write path that failed under some runtime contexts, and Rex cron delivery mode drifted to `announce` (Telegram target required) instead of `none`.
+Solution
+Retuned cron payloads to compact deterministic prompts, reduced thinking level to `low`, tightened timeouts where appropriate, changed Otto sweep logging to an absolute workspace path, and reset Rex delivery to `none`. Verified with manual cron runs: Polly `ok` in ~39s, Otto `ok` in ~56s, and active cron board returned to `ok` across enabled jobs.
+Notes
+Post-fix metrics snapshot (`runtime_metrics/20260409T190110Z`) shows improved latency (`polly 6.251s`, `rex 6.24s`, `maxwell 17.038s`) with `security critical=0`.

@@ -15,9 +15,17 @@
   - Rex 365d and 14d sync loops
   - Polly ingest watch + digest jobs
   - Otto sweep/digest checks
+- Cron stability retune applied and validated:
+  - Polly ingestion-watch manual run now `ok` (~39s)
+  - Otto outlook sweep manual run now `ok` (~56s, log append successful)
+  - Rex delivery mode reset to `none` to prevent Telegram target errors
 - Otto operational suite (quick) passes critical checks.
 - Local backup created and verified.
 - Runtime metrics and snapshot scripts implemented.
+- Implementation guide coverage checklist created:
+  - `docs/IMPLEMENTATION_GUIDE_PAGE_CHECKLIST_2026-04-09.md`
+- Log review report created:
+  - `docs/LOG_REVIEW_2026-04-09.md`
 
 ## In Progress
 
@@ -28,21 +36,19 @@
 ## Outstanding
 
 - Full 16-bot Telegram rollout is not complete (currently 4 configured/running).
-- Full Otto live turn test currently times out in this environment.
-- Security audit still reports one critical item:
-  - small local models allowed with web-capable tool surface unless sandbox hardening is applied.
-- Approvals policy still needs explicit hardening pass.
+- Operator deep-probe scope warning still present (`missing scope: operator.read`).
 - Heartbeat settings for non-main agents are still disabled.
+- `openclaw doctor` still reports memory-search embedding providers not configured.
 
 ## Latest Metrics Snapshot
 
 From `runtime_metrics/latest/summary.md`:
 
 - Telegram channels working: `4`
-- Cron jobs enabled/total: `11/11`
-- Security audit (critical/warn/info): `1/2/1`
+- Cron jobs enabled/total: `9/9`
+- Security audit (critical/warn/info): `0/2/2`
 - Otto quick suite (pass/warn/fail): `7/4/0`
 - Agent latency:
-  - `polly`: `112.454s` (lock/timeout path)
-  - `rex`: `9.125s`
-  - `maxwell`: `18.827s`
+  - `polly`: `6.251s`
+  - `rex`: `6.240s`
+  - `maxwell`: `17.038s`
