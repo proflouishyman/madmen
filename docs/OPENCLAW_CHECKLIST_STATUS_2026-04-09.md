@@ -2,7 +2,8 @@
 
 ## Completed
 
-- OpenClaw installed and gateway running.
+- OpenClaw installed, updated, and gateway running:
+  - CLI version now `2026.4.9` (upgraded from `2026.3.13`)
 - Model routing corrected to:
   - primary: `openai-codex/gpt-5.3-codex`
   - fallback: `ollama/gemma4:26b`
