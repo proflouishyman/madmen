@@ -37,3 +37,23 @@ Solution
 Updated `rex_sync_contacts.py` to support exponential quota backoff with persisted cooldown state, checkpointed resume tokens, cycle-complete cooldowns, and per-sender document upserts. Added a dedicated OpenClaw cron job `rex-backfill-365d-20m` that runs every 20 minutes with a separate checkpoint file to avoid collisions with the existing 14-day incremental sync.
 Notes
 Backfill now progresses page-by-page across the last year and throttles itself automatically when Gmail rate limits are hit.
+
+[2026-04-08] - Domain Agents Left On Generic Template Souls
+Problem
+Multiple OpenClaw domain agents were still running default template `SOUL.md`, `TOOLS.md`, and placeholder `IDENTITY.md` files, causing generic behavior and weak orchestration quality.
+Root Cause
+The rollout created all agents, but many workspaces never received role-specific post-bootstrap files from the implementation guide.
+Solution
+Replaced template files with concrete role-specific identity, soul, and tools definitions for Finn, Prof, Uhura, Emma, John, Balt, Lex, Spark, Trip, and updated Polly/Maxwell/Weber local policy files. Added explicit untrusted-content clauses and approval boundaries so external content cannot override local policy.
+Notes
+This fixes the "generic soul" regression and improves delegation reliability for Polly.
+
+[2026-04-08] - Ingestion Loop Needed Persistent Historical Maxwell Backfill
+Problem
+Maxwell was sweeping recent inbox updates but did not have a recurring historical backfill loop to keep progressing across older mailbox history while Louis is away.
+Root Cause
+Only near-real-time intake cron existed for Maxwell (`gmail-sweep-5m`); no scheduled long-horizon continuation job was configured.
+Solution
+Ran an immediate Maxwell 12-month historical ingestion pass and added cron `gmail-backfill-12m-20m` for recurring quota-safe continuation. Added Polly cron `ingestion-watch-15m` so orchestration snapshots and urgent queue refresh continue unattended.
+Notes
+Backfill and orchestration now continue automatically in read-only mode with explicit no-send constraints.
