@@ -77,12 +77,34 @@ Local plugin root:
 5. Benchmark before/after:
    - `python3 /Users/louishyman/openclaw/scripts/benchmark_ollama_soul_cache.py ...`
 
+## Startup Hook
+
+To keep the override resilient after restarts, this repo includes:
+
+- `/Users/louishyman/openclaw/scripts/start_openclaw_gateway_with_kv_checks.sh`
+
+At gateway startup it:
+
+1. Ensures `plugins.load.paths` contains the shadow plugin path.
+2. Ensures model params include:
+   - `params.ollama.keepAlive`
+   - `params.ollama.options.num_batch`
+3. Validates effective plugin source via `openclaw plugins inspect ollama --json`.
+4. Starts gateway with `openclaw gateway run ...`.
+
+Current LaunchAgent is expected to use this script as `ProgramArguments[0]`.
+
 ## Rollback
 
 Immediate rollback is config-only:
 
 - remove `/Users/louishyman/openclaw/plugins/ollama` from `plugins.load.paths`
 - restart gateway
+
+If startup wrapper is enabled in launchd and you want full rollback:
+
+- switch LaunchAgent `ProgramArguments` back to direct OpenClaw entrypoint
+- reload service
 
 OpenClaw returns to bundled Ollama plugin behavior.
 
