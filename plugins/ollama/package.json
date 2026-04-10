@@ -1,0 +1,15 @@
+{
+  "name": "@local/openclaw-ollama-shadow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local shadow Ollama provider plugin with cache-control request injection",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "providers": [
+      "ollama"
+    ]
+  }
+}

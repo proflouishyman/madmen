@@ -76,3 +76,26 @@ This additionally copies:
 - Keep repository private.
 - Commit scripts/docs and redacted snapshots.
 - Avoid committing raw secrets, OAuth files, bot tokens, and full sensitive memory dumps.
+
+## 3) Ollama static-prompt cache benchmark
+
+Script:
+
+`/Users/louishyman/openclaw/scripts/benchmark_ollama_soul_cache.py`
+
+Purpose:
+
+- benchmark repeated turns for a fixed SOUL-heavy prompt on one session
+- compare cold vs warm latency after enabling Ollama cache controls
+- report `p50` / `p95` and timeout rate
+
+Usage:
+
+```bash
+python3 /Users/louishyman/openclaw/scripts/benchmark_ollama_soul_cache.py \
+  --agent polly \
+  --session-id ollama-kv-bench \
+  --warmup 1 \
+  --turns 8 \
+  --message "Summarize yesterday's top 3 priorities in 3 bullets."
+```
