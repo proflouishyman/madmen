@@ -87,3 +87,53 @@ Solution
 Retuned cron payloads to compact deterministic prompts, reduced thinking level to `low`, tightened timeouts where appropriate, changed Otto sweep logging to an absolute workspace path, and reset Rex delivery to `none`. Verified with manual cron runs: Polly `ok` in ~39s, Otto `ok` in ~56s, and active cron board returned to `ok` across enabled jobs.
 Notes
 Post-fix metrics snapshot (`runtime_metrics/20260409T190110Z`) shows improved latency (`polly 6.251s`, `rex 6.24s`, `maxwell 17.038s`) with `security critical=0`.
+
+[2026-04-10] - Rex Backfill Cron Recurred Into Itself
+Problem
+`rex-backfill-365d-20m` repeatedly reported "already running" and did not advance work during cron-triggered runs.
+Root Cause
+The Rex cron turn had broad tool access and called the `cron` tool on its own job id (`cron.run` recursion), which returned `reason=already-running` and short-circuited real ingestion work.
+Solution
+Edited Rex cron to enforce deterministic execution: restricted tools to `exec,read,write`, switched to an explicit `python3 rex_sync_contacts.py` command with the dedicated `rex_sync_checkpoint_365d.json`, and required raw stdout JSON return. Also restored schedule to every 20 minutes.
+Notes
+After the fix, Rex cron returned real JSON stats (`pages_read/messages_scanned/total_connections/next_page_token`) and resumed checkpoint progression.
+
+[2026-04-10] - Maxwell Cron Timeout Loop From Subagent TaskFlow Drift
+Problem
+`gmail-sweep-5m` accumulated timeouts and stale running TaskFlows, causing repeated cron instability and queue contention.
+Root Cause
+Maxwell cron used spawn-style subagent execution; stale subagent run records remained active in `~/.openclaw/subagents/runs.json`, reviving running TaskFlows even after process loss/restarts.
+Solution
+Cleaned stale task/subagent state (with backups), marked orphaned subagent runs terminal in `runs.json`, restarted gateway, and hardened Maxwell cron to run in-session only with restricted tools (`exec,read,write`), `thinking=off`, and a deterministic read-only sweep prompt that writes directly to Maxwell memory artifacts.
+Notes
+Post-fix Maxwell cron returned to `ok` with `consecutiveErrors=0` and a successful latest duration (`~82.9s`) under Ollama primary routing.
+
+[2026-04-10] - Metrics Collector Could Stall On Hanging Agent Probes
+Problem
+`scripts/collect_openclaw_metrics.sh` could run indefinitely when an agent CLI call hung, preventing reproducible metrics collection.
+Root Cause
+The Python latency probe used `subprocess.run(...)` without a hard process timeout, so tool hangs could block the script forever.
+Solution
+Added explicit per-agent hard timeouts to latency probes, surfaced `timed_out` in output JSON, and kept structured excerpts for timeout diagnostics.
+Notes
+With runtime stabilized, a fresh metrics snapshot (`runtime_metrics/20260410T065202Z`) completed successfully with non-timeout latencies (`polly 25.124s`, `rex 43.745s`, `maxwell 48.543s`).
+
+[2026-04-10] - Maxwell 12-Month Backfill Was Disabled And Context-Heavy
+Problem
+Historical Maxwell ingestion over the past year was no longer advancing because the `gmail-backfill-12m-20m` cron had been disabled, and status prompts were reading a very large state file.
+Root Cause
+During earlier stabilization work, the backfill cron remained disabled. The backfill state format also accumulated full message listings, which made readback prompts expensive and increased timeout risk under Ollama.
+Solution
+Added deterministic script `scripts/maxwell_backfill_tick.py` that performs one quota-aware Gmail page tick via `gog -j`, persists compact checkpoint state, writes per-run summaries, and applies exponential backoff markers. Reconfigured and enabled cron `292d2a4f-fd28-4b06-bd94-29283a902753` to run this script with `toolsAllow=exec,read,write`, `thinking=off`, `lightContext=true`, and `timeoutSeconds=300`.
+Notes
+Checkpoint now advances again (`gmail-backfill-12m-checkpoint.json`), and cron status returned to `ok` without large-prompt parsing.
+
+[2026-04-10] - Metrics Collector Timeout Handler Failed On Python 3.14 Bytes
+Problem
+Metrics collection failed after an agent timeout with `TypeError: can only concatenate str (not "bytes") to str`.
+Root Cause
+`subprocess.TimeoutExpired` payloads (`stdout`/`stderr`) can be bytes in this runtime, but the collector timeout path assumed strings.
+Solution
+Updated `scripts/collect_openclaw_metrics.sh` with a `to_text` helper to safely decode bytes before building the timeout excerpt.
+Notes
+Post-fix metrics run succeeded: `runtime_metrics/20260410T071325Z`.

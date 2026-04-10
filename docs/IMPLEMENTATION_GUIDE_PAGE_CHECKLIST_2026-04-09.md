@@ -61,3 +61,18 @@ Implementation parts:
 
 - [x] Keep this checklist in repo for future drift checks.
 - [ ] Re-run this checklist after any guide revision.
+
+## Revalidation Pass (2026-04-10)
+
+Focused reread completed for sections directly tied to current runtime fixes:
+
+- [x] `760-900` (CP6 cron discipline, heartbeat/cron boundaries, load management)
+- [x] `3960-4245` (Weber role contract and adjacent agent policy structure)
+- [x] `4328-4498` (Emma and John role-specific SOUL/TOOLS definitions)
+- [x] `5380-5525` (Rex data model and cron/runbook patterns)
+
+Operational consequence:
+
+- Rex backfill cron was corrected to deterministic exec behavior (no self-recursive cron calls).
+- Maxwell intake cron was hardened to avoid subagent-flow lockups.
+- Maxwell 12m historical backfill was re-enabled with a deterministic exec tick script and compact checkpoint state.

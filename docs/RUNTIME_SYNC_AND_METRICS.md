@@ -18,6 +18,9 @@ What it collects:
 - security audit (`--deep`)
 - Otto suite (`--quick`)
 - timed agent latency checks (`polly`, `rex`, `maxwell`)
+  - hard process timeouts per probe to prevent collector hangs
+  - `timed_out` boolean in `agent-latency.json`
+  - timeout-path bytes decoding guard for Python 3.14 `TimeoutExpired`
 
 Outputs:
 
@@ -25,6 +28,18 @@ Outputs:
 - machine summary: `summary.json`
 - human summary: `summary.md`
 - symlink: `runtime_metrics/latest`
+
+Latest validated snapshot:
+
+- `runtime_metrics/20260410T071325Z`
+- Latency: `polly 23.45s`, `rex 47.891s`, `maxwell 52.655s`
+
+Maxwell backfill execution mode:
+
+- Cron `gmail-backfill-12m-20m` now runs deterministic exec tick script:
+  - `/Users/louishyman/openclaw/scripts/maxwell_backfill_tick.py`
+- Compact checkpoint path:
+  - `/Users/louishyman/.openclaw/workspaces/maxwell-workspace/memory/gmail-backfill-12m-checkpoint.json`
 
 ## 2) Runtime snapshot sync (GitHub-safe default)
 
