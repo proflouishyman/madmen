@@ -56,13 +56,13 @@
 
 ## Latest Metrics Snapshot
 
-From `runtime_metrics/20260410T071325Z/summary.md`:
+From `runtime_metrics/20260410T072040Z/summary.md`:
 
 - Telegram channels working: `4`
 - Cron jobs enabled/total: `10/10`
 - Security audit (critical/warn/info): `1/2/1`
 - Otto quick suite (pass/warn/fail): `7/4/0`
 - Agent latency:
-  - `polly`: `23.45s`
-  - `rex`: `47.891s`
-  - `maxwell`: `52.655s`
+  - `polly`: `20.843s`
+  - `rex`: `46.4s`
+  - `maxwell`: `46.089s`

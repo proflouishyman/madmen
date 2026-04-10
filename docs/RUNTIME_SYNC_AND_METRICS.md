@@ -31,8 +31,8 @@ Outputs:
 
 Latest validated snapshot:
 
-- `runtime_metrics/20260410T071325Z`
-- Latency: `polly 23.45s`, `rex 47.891s`, `maxwell 52.655s`
+- `runtime_metrics/20260410T072040Z`
+- Latency: `polly 20.843s`, `rex 46.4s`, `maxwell 46.089s`
 
 Maxwell backfill execution mode:
 

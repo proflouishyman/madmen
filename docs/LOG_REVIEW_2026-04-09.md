@@ -91,5 +91,5 @@ Newly confirmed root causes and fixes:
 - Added safe bytes-to-text normalization in the timeout handler.
 
 Post-fix validation snapshot:
-- `runtime_metrics/20260410T071325Z`
-- Agent latency probe success: `polly 23.45s`, `rex 47.891s`, `maxwell 52.655s`
+- `runtime_metrics/20260410T072040Z`
+- Agent latency probe success: `polly 20.843s`, `rex 46.4s`, `maxwell 46.089s`
