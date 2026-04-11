@@ -157,3 +157,23 @@ Solution
 Expanded shadow wrapper matching to any provider with `api="ollama"` and added flattened-param support for cache and reliability parsing in `plugins/ollama/lib/cache-controls.js`. Added unit coverage in `plugins/ollama/test/cache-controls.test.mjs` for flattened inputs and custom-provider patching.
 Notes
 Reliability controls still depend on OpenClaw’s stream wrapper compatibility path; this change improves coverage without changing upstream OpenClaw contracts.
+
+[2026-04-11] - Reconciler Missed Superseded Cron Running Rows And Lock-Heal Telemetry
+Problem
+Cron/task state could remain stuck with a `running` row even after newer runs for the same cron job had already ended, and Polly lane lock incidents needed explicit runtime healing visibility.
+Root Cause
+`scripts/reconcile_runtime_state.py` only reconciled duplicate concurrent `running` cron rows; it did not reconcile older `running` rows that were superseded by newer terminal runs (`succeeded/failed/timed_out/lost`). Backer health output also did not expose stale-lock detection/heal state.
+Solution
+Updated `scripts/reconcile_runtime_state.py` to mark stale `running` cron rows as `lost` when a newer terminal run exists for the same `source_id`, and added deterministic tests in `scripts/test_reconcile_runtime_state.py` for both duplicate-running and superseded-running cron scenarios. Extended `scripts/backer_health_tick.sh` with stale lock detection, gateway restart healing for stale OpenClaw lock holders, and telemetry fields (`stale_locks_detected`, `stale_lock_heal_triggered`).
+Notes
+This is an operational safeguard for upstream scheduler/runtime drift; it prevents stale bookkeeping from persisting and gives explicit lock-heal observability in Backer logs.
+
+[2026-04-11] - Otto Cron Test Broke On JSON Warning Preamble
+Problem
+`scripts/test_otto_suite.sh --quick` reported `FAIL: Otto cron coverage - Could not parse cron JSON` even when cron jobs existed.
+Root Cause
+`openclaw cron list --json` can emit config warning lines before the JSON body. The suite attempted to parse full stdout directly as JSON and failed.
+Solution
+Updated `scripts/test_otto_suite.sh` to strip non-JSON preamble content and parse from the first `{` before counting Otto cron jobs.
+Notes
+After the fix, `Otto cron coverage` passes reliably while preserving strict JSON parsing of the payload body.

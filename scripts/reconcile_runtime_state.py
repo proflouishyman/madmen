@@ -163,7 +163,7 @@ def _reconcile_duplicate_running_cron_tasks(db_path: Path, dry_run: bool, reason
         "ORDER BY source_id, ts DESC"
     )
 
-    to_mark: list[str] = []
+    to_mark: set[str] = set()
     seen_sources: set[str] = set()
 
     with sqlite3.connect(db_path) as conn:
@@ -173,13 +173,38 @@ def _reconcile_duplicate_running_cron_tasks(db_path: Path, dry_run: bool, reason
             if source not in seen_sources:
                 seen_sources.add(source)
                 continue
-            to_mark.append(str(task_id))
+            to_mark.add(str(task_id))
+
+        # Non-obvious invariant: once a newer terminal cron run exists for the
+        # same source, any older row still marked `running` is stale state.
+        superseded_rows = conn.execute(
+            (
+                "SELECT stale.task_id "
+                "FROM task_runs AS stale "
+                "WHERE stale.runtime='cron' "
+                "AND stale.status='running' "
+                "AND stale.source_id IS NOT NULL "
+                "AND stale.source_id <> '' "
+                "AND EXISTS ("
+                "  SELECT 1 "
+                "  FROM task_runs AS newer "
+                "  WHERE newer.runtime='cron' "
+                "  AND newer.source_id = stale.source_id "
+                "  AND newer.task_id <> stale.task_id "
+                "  AND COALESCE(newer.created_at, newer.started_at, 0) > COALESCE(stale.created_at, stale.started_at, 0) "
+                "  AND newer.status IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'lost')"
+                ")"
+            )
+        ).fetchall()
+        for (task_id,) in superseded_rows:
+            to_mark.add(str(task_id))
 
         if dry_run or not to_mark:
             return len(to_mark)
 
         now_ms = int(time.time() * 1000)
-        placeholders = ",".join("?" for _ in to_mark)
+        task_ids = sorted(to_mark)
+        placeholders = ",".join("?" for _ in task_ids)
         conn.execute(
             (
                 "UPDATE task_runs "
@@ -191,10 +216,10 @@ def _reconcile_duplicate_running_cron_tasks(db_path: Path, dry_run: bool, reason
                 "cleanup_after=? "
                 f"WHERE task_id IN ({placeholders})"
             ),
-            (reason, now_ms, now_ms, now_ms + 86400000, *to_mark),
+            (reason, now_ms, now_ms, now_ms + 86400000, *task_ids),
         )
         conn.commit()
-        return len(to_mark)
+        return len(task_ids)
 
 
 def _recent_running_task_keys(db_path: Path, cutoff_ms: int) -> set[str]:

@@ -194,8 +194,18 @@ check_otto_crons() {
     return
   fi
 
+  local json_clean
+  if ! json_clean="$(
+    python3 -c 'import sys; text=sys.stdin.read(); i=text.find("{"); 
+if i < 0: raise SystemExit(1)
+print(text[i:])' <<<"$json" 2>/dev/null
+  )"; then
+    fail "Otto cron coverage" "Could not locate JSON payload in cron output"
+    return
+  fi
+
   local otto_count
-  if ! otto_count="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(sum(1 for j in data.get("jobs", []) if j.get("agentId")=="otto"))' <<<"$json" 2>/dev/null)"; then
+  if ! otto_count="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(sum(1 for j in data.get("jobs", []) if j.get("agentId")=="otto"))' <<<"$json_clean" 2>/dev/null)"; then
     fail "Otto cron coverage" "Could not parse cron JSON"
     return
   fi

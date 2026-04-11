@@ -90,6 +90,7 @@ Purpose:
 - clear stale per-agent session-store `status=running` markers
 - remove orphaned `*.jsonl.lock` files
 - mark duplicate concurrent `running` cron rows for the same `source_id` as `lost` (keep newest)
+- mark superseded `running` cron rows as `lost` when a newer terminal run already exists for the same `source_id`
 
 Operational integration:
 
@@ -98,6 +99,8 @@ Operational integration:
 - Backer health tick runs reconciler every cycle and reports:
   - `stale_tasks_marked`
   - `stale_sessions_cleared`
+  - `stale_locks_detected`
+  - `stale_lock_heal_triggered`
 
 Validation:
 
