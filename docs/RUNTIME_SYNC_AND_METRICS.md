@@ -103,6 +103,13 @@ Validation:
 
 - `python3 -m unittest /Users/louishyman/openclaw/scripts/test_reconcile_runtime_state.py -v`
 
+Known limitation:
+
+- Under heavy model failover pressure, OpenClaw can still emit inconsistent
+  task lifecycle rows (for example `status=running` with terminal markers).
+  The reconciler is an operational safeguard that clears these rows; it does
+  not replace an upstream runtime fix.
+
 ## 4) Ollama static-prompt cache benchmark
 
 Script:
