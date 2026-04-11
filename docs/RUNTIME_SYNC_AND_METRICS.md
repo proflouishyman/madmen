@@ -77,7 +77,33 @@ This additionally copies:
 - Commit scripts/docs and redacted snapshots.
 - Avoid committing raw secrets, OAuth files, bot tokens, and full sensitive memory dumps.
 
-## 3) Ollama static-prompt cache benchmark
+## 3) Runtime stale-state reconciler
+
+Script:
+
+`/Users/louishyman/openclaw/scripts/reconcile_runtime_state.py`
+
+Purpose:
+
+- reconcile stale `running` task rows as `lost`
+- immediately reconcile impossible rows where `status=running` but terminal markers already exist (`ended_at` / `terminal_outcome`)
+- clear stale per-agent session-store `status=running` markers
+- remove orphaned `*.jsonl.lock` files
+- mark duplicate concurrent `running` cron rows for the same `source_id` as `lost` (keep newest)
+
+Operational integration:
+
+- startup wrapper runs reconciler before boot:
+  - `/Users/louishyman/openclaw/scripts/start_openclaw_gateway_with_kv_checks.sh`
+- Backer health tick runs reconciler every cycle and reports:
+  - `stale_tasks_marked`
+  - `stale_sessions_cleared`
+
+Validation:
+
+- `python3 -m unittest /Users/louishyman/openclaw/scripts/test_reconcile_runtime_state.py -v`
+
+## 4) Ollama static-prompt cache benchmark
 
 Script:
 

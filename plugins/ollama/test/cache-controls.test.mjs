@@ -7,7 +7,9 @@ import { pathToFileURL } from "node:url";
 import {
   injectOllamaCacheControls,
   mergeOllamaOptions,
+  patchOllamaProviderDefinition,
   resolveOllamaCacheControls,
+  resolveOllamaReliabilityControls,
   wrapStreamFnWithOllamaCacheControls,
 } from "../lib/cache-controls.js";
 
@@ -21,6 +23,17 @@ test("resolveOllamaCacheControls reads keepAlive and options", () => {
   assert.deepEqual(controls, {
     keepAlive: "15m",
     options: { num_batch: 8 },
+  });
+});
+
+test("resolveOllamaCacheControls accepts flattened keys", () => {
+  const controls = resolveOllamaCacheControls({
+    keepAlive: "10m",
+    options: { num_batch: 4 },
+  });
+  assert.deepEqual(controls, {
+    keepAlive: "10m",
+    options: { num_batch: 4 },
   });
 });
 
@@ -72,11 +85,7 @@ test("mergeOllamaOptions keeps core-managed keys authoritative", () => {
   assert.equal(merged.top_k, 5);
 });
 
-test("no params returns stream function unchanged and payload stays byte-identical", () => {
-  const base = () => "ok";
-  const wrapped = wrapStreamFnWithOllamaCacheControls(base, undefined);
-  assert.strictEqual(wrapped, base);
-
+test("no params keeps payload byte-identical", () => {
   const payload = {
     model: "gemma4:26b",
     options: { num_ctx: 32768, temperature: 0 },
@@ -84,6 +93,47 @@ test("no params returns stream function unchanged and payload stays byte-identic
   const before = JSON.stringify(payload);
   injectOllamaCacheControls(payload, null);
   assert.equal(JSON.stringify(payload), before);
+});
+
+test("resolveOllamaReliabilityControls reads reliability config", () => {
+  const controls = resolveOllamaReliabilityControls({
+    ollama: {
+      reliability: {
+        requestTimeoutMs: 90000,
+        maxRetries: 2,
+        retryBackoffMs: 150,
+      },
+    },
+  });
+  assert.deepEqual(controls, {
+    requestTimeoutMs: 90000,
+    maxRetries: 2,
+    retryBackoffMs: 150,
+  });
+});
+
+test("resolveOllamaReliabilityControls accepts flattened keys", () => {
+  const controls = resolveOllamaReliabilityControls({
+    requestTimeoutMs: 3500,
+    maxRetries: 0,
+    retryBackoffMs: 100,
+  });
+  assert.deepEqual(controls, {
+    requestTimeoutMs: 3500,
+    maxRetries: 0,
+    retryBackoffMs: 100,
+  });
+});
+
+test("patchOllamaProviderDefinition patches custom providers using api=ollama", () => {
+  const baseProvider = {
+    id: "ollama-polly",
+    api: "ollama",
+    wrapStreamFn: ({ streamFn }) => streamFn,
+  };
+  const patched = patchOllamaProviderDefinition(baseProvider);
+  assert.notEqual(patched, baseProvider);
+  assert.equal(typeof patched.wrapStreamFn, "function");
 });
 
 function resolveInstalledRuntimeApiPath() {
@@ -94,6 +144,54 @@ function resolveInstalledRuntimeApiPath() {
   }
   return null;
 }
+
+function createCollectorStream() {
+  const events = [];
+  let ended = false;
+  let resolveEnded;
+  const endedPromise = new Promise((resolve) => {
+    resolveEnded = resolve;
+  });
+  return {
+    push(event) {
+      events.push(event);
+    },
+    end() {
+      ended = true;
+      resolveEnded();
+    },
+    get events() {
+      return events;
+    },
+    get ended() {
+      return ended;
+    },
+    endedPromise,
+  };
+}
+
+async function* streamFromEvents(events) {
+  for (const event of events) yield event;
+}
+
+test("polly provider gets fallback reliability signal when params are missing", async () => {
+  const base = (_model, _context, options) => {
+    assert.ok(options?.signal);
+    return streamFromEvents([{ type: "done" }]);
+  };
+
+  const wrapped = wrapStreamFnWithOllamaCacheControls(base, undefined, createCollectorStream);
+  const out = wrapped(
+    { api: "ollama", provider: "ollama-polly", id: "qwen2.5:7b-instruct" },
+    {},
+    {},
+  );
+  await out.endedPromise;
+  assert.deepEqual(
+    out.events.map((event) => event.type),
+    ["done"],
+  );
+});
 
 test(
   "integration: wrapped createConfiguredOllamaStreamFn injects keep_alive and options",

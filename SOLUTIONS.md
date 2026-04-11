@@ -137,3 +137,23 @@ Solution
 Updated `scripts/collect_openclaw_metrics.sh` with a `to_text` helper to safely decode bytes before building the timeout excerpt.
 Notes
 Post-fix metrics run succeeded: `runtime_metrics/20260410T071325Z`.
+
+[2026-04-11] - Runtime Reconciler Missed Impossible Running Task Rows
+Problem
+OpenClaw task rows were observed in an impossible state (`status=running` while `endedAt` and terminal `error` were already set), which left CLI calls hanging and kept stale run markers in runtime state.
+Root Cause
+The reconciler only selected stale runs by age (`last_event_at` cutoff) and did not treat terminal-marked `running` rows as immediately invalid.
+Solution
+Updated `scripts/reconcile_runtime_state.py` to reconcile `running` rows immediately when `ended_at` or `terminal_outcome` exists, regardless of grace window. Added regression tests in `scripts/test_reconcile_runtime_state.py` to prove immediate cleanup for this edge case and preserve normal recent-running behavior.
+Notes
+This is a mitigation for upstream task lifecycle inconsistency; OpenClaw can still emit inconsistent timestamp rows under heavy failover churn, but stale queue blockage is now auto-cleared.
+
+[2026-04-11] - Ollama Shadow Wrapper Param Handling Too Narrow
+Problem
+Ollama shadow-provider controls were brittle when provider/param shapes varied, reducing reliability of cache-control injection across custom Ollama provider aliases.
+Root Cause
+Wrapper logic matched only `provider.id === "ollama"` and expected params strictly under `params.ollama`, so alternative provider ids and flattened param forms were ignored.
+Solution
+Expanded shadow wrapper matching to any provider with `api="ollama"` and added flattened-param support for cache and reliability parsing in `plugins/ollama/lib/cache-controls.js`. Added unit coverage in `plugins/ollama/test/cache-controls.test.mjs` for flattened inputs and custom-provider patching.
+Notes
+Reliability controls still depend on OpenClaw’s stream wrapper compatibility path; this change improves coverage without changing upstream OpenClaw contracts.

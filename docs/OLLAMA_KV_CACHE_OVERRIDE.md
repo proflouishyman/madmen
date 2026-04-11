@@ -15,6 +15,7 @@ when using Ollama through OpenClaw, without forking OpenClaw.
 - Reuse bundled Ollama plugin behavior, but patch provider stream wrapping to inject:
   - top-level `keep_alive` (when not already present in payload)
   - additional Ollama `options` from params
+  - optional reliability controls (`requestTimeoutMs`, `maxRetries`, `retryBackoffMs`)
 
 ## New Params Contract
 
@@ -24,6 +25,16 @@ For Ollama models, use:
   - Type: `string | number`
 - `agents.defaults.models["ollama/<model>"].params.ollama.options`
   - Type: `object`
+- `agents.defaults.models["ollama/<model>"].params.ollama.reliability`
+  - Type: `object`
+  - Keys: `requestTimeoutMs`, `maxRetries`, `retryBackoffMs`
+
+The wrapper also accepts flattened variants when params are injected without the
+`ollama` nesting:
+
+- `params.keepAlive`
+- `params.options`
+- `params.requestTimeoutMs` / `params.maxRetries` / `params.retryBackoffMs`
 
 Example:
 
@@ -122,3 +133,4 @@ Coverage includes:
 - options merge behavior
 - no-params no-op behavior
 - integration path using bundled `createConfiguredOllamaStreamFn` with mocked fetch
+- custom-provider patching where provider id is not exactly `ollama` but uses `api=ollama`
