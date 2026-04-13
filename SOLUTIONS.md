@@ -222,3 +222,26 @@ Additional fixes:
 - Cleared all stale consecutiveErrors counters
 Notes
 The light tier (qwen2.5:7b) with num_batch=8 and keepAlive=10m yields GPU quickly to the heavy tier. Tasks routed to the light tier barely need LLM reasoning — they parse a simple "run this command and return stdout" instruction. This frees gemma4:26b context/cache for tasks that actually need classification and reasoning. The KV cache plugin's keep_alive injection benefits both tiers independently.
+
+[2026-04-13] - 3-Lane Ollama Architecture: Separate Instances to Prevent GPU Memory Competition
+Problem
+The 2-tier model routing (both models sharing port 11434) caused GPU memory competition. Ollama swaps models in/out of GPU memory on a single instance, so loading qwen2.5:7b (4.7 GB) would evict gemma4:26b's warm KV cache (17 GB), destroying the 14x speedup from the KV cache plugin. Every time a light cron task ran, the heavy model's cache was cold on the next request.
+Root Cause
+Single Ollama instance cannot hold multiple models in GPU memory simultaneously without eviction. The keep_alive setting only delays eviction — it cannot prevent it when a different model is loaded on the same instance. The fundamental constraint is that GPU VRAM is shared within a process.
+Solution
+Implemented 3 dedicated Ollama instances on separate ports, each holding exactly one model permanently:
+- Port 11434: Heavy lane (gemma4:26b) — classification, reasoning, digests. keepAlive=45m, num_batch=16.
+- Port 11435: Polly lane (qwen2.5:7b-instruct) — user-facing fast path. keepAlive=-1 (permanent), OLLAMA_MAX_LOADED_MODELS=1.
+- Port 11436: Light lane (qwen2.5:7b) — deterministic cron exec tasks. keepAlive=10m, num_batch=8, context_length=4096.
+
+Scripts created/updated:
+- NEW: scripts/setup_light_ollama_lane.sh — provisions light lane launchd plist, starts instance, prewarms model, registers ollama-light provider in openclaw.json, migrates cron jobs from ollama/qwen2.5:7b to ollama-light/qwen2.5:7b
+- UPDATED: scripts/backer_health_tick.sh — monitors all 3 ports, restarts light lane if unresponsive, includes light_ok/light_restarted in JSON health summary
+- UPDATED: scripts/start_openclaw_gateway_with_kv_checks.sh — enforces startup config for all 3 lanes (heavy + polly + light model params and reliability controls)
+
+Plugin audit:
+- KV cache plugin (openclaw-ollama-kv-cache-plugin/) verified: 10/10 tests pass, patchOllamaProviderDefinition correctly patches all providers with api="ollama" (covers heavy, polly, and light lanes)
+- Plugin scripts/ directory documented as historical — canonical versions live in main scripts/
+- Generated shim (bundled-ollama-entry.js) verified valid for /opt/homebrew OpenClaw install
+Notes
+Each Ollama instance must be a separate OS process to hold its own GPU memory region. The OLLAMA_MAX_LOADED_MODELS=1 on Polly and light lanes prevents accidental multi-model loading. The shared OLLAMA_MODELS path means all three instances read from the same model cache on disk — no duplication. The setup_light_ollama_lane.sh must be run on the user's Mac (requires launchctl GUI session). After running, cron jobs referencing ollama/qwen2.5:7b are automatically migrated to ollama-light/qwen2.5:7b.

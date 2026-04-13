@@ -13,6 +13,8 @@ POLLY_MODEL="${POLLY_MODEL:-qwen2.5:7b-instruct}"
 POLLY_PROVIDER_ID="${POLLY_PROVIDER_ID:-ollama-polly}"
 POLLY_SESSION_KEY="${POLLY_SESSION_KEY:-agent:polly:main}"
 POLLY_PLIST="${HOME}/Library/LaunchAgents/com.ollama.polly.plist"
+LIGHT_PLIST="${HOME}/Library/LaunchAgents/com.ollama.light.plist"
+LIGHT_MODEL="${LIGHT_MODEL:-qwen2.5:7b}"
 OPENCLAW_GATEWAY_LABEL="${OPENCLAW_GATEWAY_LABEL:-ai.openclaw.gateway}"
 UID_NUM="$(id -u)"
 STALE_RECONCILE_GRACE_SECONDS="${BACKER_STALE_RECONCILE_GRACE_SECONDS:-420}"
@@ -52,6 +54,15 @@ restart_primary_lane() {
   # Fallback sequence for non-homebrew launch labels.
   launchctl kickstart -k "gui/${UID_NUM}/com.ollama.ollama" >/dev/null 2>&1 || true
   launchctl kickstart -k "gui/${UID_NUM}/homebrew.mxcl.ollama" >/dev/null 2>&1 || true
+}
+
+restart_light_lane() {
+  if [[ -f "${LIGHT_PLIST}" ]]; then
+    launchctl bootout "gui/${UID_NUM}/com.ollama.light" >/dev/null 2>&1 || true
+    launchctl bootout "gui/${UID_NUM}" "${LIGHT_PLIST}" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/${UID_NUM}" "${LIGHT_PLIST}" >/dev/null 2>&1 || true
+    launchctl kickstart -k "gui/${UID_NUM}/com.ollama.light" >/dev/null 2>&1 || true
+  fi
 }
 
 restart_openclaw_gateway() {
@@ -224,8 +235,10 @@ append_log() {
 
 primary_ok=true
 polly_ok=true
+light_ok=true
 primary_restarted=false
 polly_restarted=false
+light_restarted=false
 prewarm_ok=true
 stale_tasks_marked=0
 stale_sessions_cleared=0
@@ -288,6 +301,21 @@ if [[ "${polly_ok}" == true ]]; then
   fi
 fi
 
+# Light lane health (port 11436) — only if plist exists (optional lane)
+if [[ -f "${LIGHT_PLIST}" ]]; then
+  if ! probe_url "http://127.0.0.1:11436/api/tags"; then
+    sleep 1
+    if ! probe_url "http://127.0.0.1:11436/api/tags"; then
+      restart_light_lane
+      light_restarted=true
+      sleep 2
+      if ! probe_url "http://127.0.0.1:11436/api/tags"; then
+        light_ok=false
+      fi
+    fi
+  fi
+fi
+
 # Non-obvious invariant: OpenClaw may leave stale `running` rows/status markers
 # after hard timeouts. Reconcile them each health cycle so queues do not clog.
 if reconcile_json="$(python3 "${SCRIPT_DIR}/reconcile_runtime_state.py" \
@@ -319,10 +347,10 @@ PY
 )"
 
 status="ok"
-if [[ "${primary_ok}" != true || "${polly_ok}" != true || "${prewarm_ok}" != true ]]; then
+if [[ "${primary_ok}" != true || "${polly_ok}" != true || "${prewarm_ok}" != true || "${light_ok}" != true ]]; then
   status="degraded"
 fi
 
-summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered},\"polly_route_reset_applied\":${polly_route_reset_applied}}"
+summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"light_ok\":${light_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"light_restarted\":${light_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered},\"polly_route_reset_applied\":${polly_route_reset_applied}}"
 append_log "${summary}"
 printf '%s\n' "${summary}"

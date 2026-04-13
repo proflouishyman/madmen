@@ -19,6 +19,12 @@ POLLY_KEEP_ALIVE_DEFAULT="${OPENCLAW_POLLY_KEEPALIVE:--1}"
 POLLY_REQUEST_TIMEOUT_DEFAULT="${OPENCLAW_POLLY_REQUEST_TIMEOUT_MS:-3000}"
 POLLY_MAX_RETRIES_DEFAULT="${OPENCLAW_POLLY_MAX_RETRIES:-0}"
 POLLY_RETRY_BACKOFF_DEFAULT="${OPENCLAW_POLLY_RETRY_BACKOFF_MS:-100}"
+LIGHT_MODEL_KEY="${OPENCLAW_LIGHT_MODEL_KEY:-ollama-light/qwen2.5:7b}"
+LIGHT_KEEP_ALIVE_DEFAULT="${OPENCLAW_LIGHT_KEEPALIVE:-10m}"
+LIGHT_NUM_BATCH_DEFAULT="${OPENCLAW_LIGHT_NUM_BATCH:-8}"
+LIGHT_REQUEST_TIMEOUT_DEFAULT="${OPENCLAW_LIGHT_REQUEST_TIMEOUT_MS:-60000}"
+LIGHT_MAX_RETRIES_DEFAULT="${OPENCLAW_LIGHT_MAX_RETRIES:-0}"
+LIGHT_RETRY_BACKOFF_DEFAULT="${OPENCLAW_LIGHT_RETRY_BACKOFF_MS:-250}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "[kv-startup] missing config: ${CONFIG_PATH}" >&2
@@ -46,7 +52,13 @@ python3 - \
   "${POLLY_KEEP_ALIVE_DEFAULT}" \
   "${POLLY_REQUEST_TIMEOUT_DEFAULT}" \
   "${POLLY_MAX_RETRIES_DEFAULT}" \
-  "${POLLY_RETRY_BACKOFF_DEFAULT}" <<'PY'
+  "${POLLY_RETRY_BACKOFF_DEFAULT}" \
+  "${LIGHT_MODEL_KEY}" \
+  "${LIGHT_KEEP_ALIVE_DEFAULT}" \
+  "${LIGHT_NUM_BATCH_DEFAULT}" \
+  "${LIGHT_REQUEST_TIMEOUT_DEFAULT}" \
+  "${LIGHT_MAX_RETRIES_DEFAULT}" \
+  "${LIGHT_RETRY_BACKOFF_DEFAULT}" <<'PY'
 import json
 import pathlib
 import sys
@@ -65,6 +77,12 @@ polly_keep_alive = sys.argv[11]
 polly_request_timeout_ms = int(sys.argv[12])
 polly_max_retries = int(sys.argv[13])
 polly_retry_backoff_ms = int(sys.argv[14])
+light_model_key = sys.argv[15]
+light_keep_alive = sys.argv[16]
+light_num_batch = int(sys.argv[17])
+light_request_timeout_ms = int(sys.argv[18])
+light_max_retries = int(sys.argv[19])
+light_retry_backoff_ms = int(sys.argv[20])
 
 cfg = json.loads(config_path.read_text())
 changed = False
@@ -157,6 +175,37 @@ if polly_reliability.get("retryBackoffMs") != polly_retry_backoff_ms:
     polly_reliability["retryBackoffMs"] = polly_retry_backoff_ms
     changed = True
 polly_ollama["reliability"] = polly_reliability
+
+# Light lane model params (ollama-light/qwen2.5:7b on port 11436)
+light_cfg = models.setdefault(light_model_key, {})
+light_params = light_cfg.setdefault("params", {})
+light_ollama = light_params.setdefault("ollama", {})
+
+if light_ollama.get("keepAlive") != light_keep_alive:
+    light_ollama["keepAlive"] = light_keep_alive
+    changed = True
+
+light_options = light_ollama.get("options")
+if not isinstance(light_options, dict):
+    light_options = {}
+if light_options.get("num_batch") != light_num_batch:
+    light_options["num_batch"] = light_num_batch
+    changed = True
+light_ollama["options"] = light_options
+
+light_reliability = light_ollama.get("reliability")
+if not isinstance(light_reliability, dict):
+    light_reliability = {}
+if light_reliability.get("requestTimeoutMs") != light_request_timeout_ms:
+    light_reliability["requestTimeoutMs"] = light_request_timeout_ms
+    changed = True
+if light_reliability.get("maxRetries") != light_max_retries:
+    light_reliability["maxRetries"] = light_max_retries
+    changed = True
+if light_reliability.get("retryBackoffMs") != light_retry_backoff_ms:
+    light_reliability["retryBackoffMs"] = light_retry_backoff_ms
+    changed = True
+light_ollama["reliability"] = light_reliability
 
 if changed:
     config_path.write_text(json.dumps(cfg, indent=2) + "\n")
