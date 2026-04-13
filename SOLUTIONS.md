@@ -271,7 +271,28 @@ Created scripts/polly_ingest.py — a deterministic Python script that:
 - Uses stable SHA-256 IDs for idempotency (safe to re-run)
 Re-enabled ingestion-watch cron (renamed to ingestion-watch-20m), now running every 20 minutes on the light lane, calling polly_ingest.py directly. Timeout reduced from 420s to 120s since the script runs in ~2 seconds.
 Notes
-The morning digest should now find data in polly.db. Events, commitments, and drafts tables will populate as Otto writes structured sweep entries and agents create drafts. The stale-contact check (waiting_on) seeds 20 entries initially — these can be resolved by Polly or Louis.
+The morning digest should now find data in polly.db. See also the calendar ingestion entry below.
+
+[2026-04-13] - Calendar Not Wired: Polly Had No Calendar Access
+Problem
+Polly's morning digest never showed calendar events. No agent was reading either Outlook or Google Calendar into polly.db. Otto had AppleScript calendar code in TOOLS.md but no cron job and no output file. Google Calendar had zero integration.
+Root Cause
+The Otto year ingestion script (start_otto_year_ingestion.sh) was written but never run. polly.db had an events table but nothing populated it. Polly's morning digest instructions had no calendar section.
+Solution
+Three scripts created:
+- scripts/otto_calendar_tick.sh: AppleScript reads today+tomorrow Outlook calendar events → otto-workspace/state/calendar-today.yaml. Handles Outlook not running gracefully.
+- scripts/gcal_today_tick.py: Calls `gog -a lhyman@gmail.com calendar events list` → maxwell-workspace/memory/gcal-today.json. Exits 0 with status=error if gog calendar scope not yet granted (best-effort, does not break digest).
+- scripts/polly_ingest.py: Extended with ingest_outlook_calendar() and ingest_google_calendar() that parse both files into polly.db events table. Idempotent, stable IDs prevent duplicates.
+
+Two new cron jobs added:
+- otto-calendar-6am: daily 6:00 AM ET, runs otto_calendar_tick.sh via Otto (light lane)
+- maxwell-gcal-6am: daily 6:05 AM ET, runs gcal_today_tick.py via Maxwell (light lane)
+Both run before polly-pre-digest-healthcheck (6:50 AM) and polly-morning-digest (7:00 AM).
+
+Polly SOUL.md updated: morning digest now starts with calendar section, shows today+tomorrow events sorted by time, flags prep_required events.
+Exec allowlists updated: otto_calendar_tick.sh added to Otto TOOLS.md, gcal_today_tick.py added to Maxwell TOOLS.md.
+Notes
+Google Calendar requires gog to have calendar.readonly scope. If not yet granted, gcal_today_tick.py writes status=error to gcal-today.json and exits 0 — Outlook calendar still works. To grant Google Calendar scope: openclaw accounts setup --account lhyman@gmail.com --scope calendar.readonly (run on Mac). The two calendars are synthesized in polly.db events table — deduplication by title+time happens at query time in Polly's digest. Events, commitments, and drafts tables will populate as Otto writes structured sweep entries and agents create drafts. The stale-contact check (waiting_on) seeds 20 entries initially — these can be resolved by Polly or Louis.
 
 [2026-04-13] - ollama-light Provider Missing Auth in Agent Profiles
 Problem
