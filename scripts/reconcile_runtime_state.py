@@ -103,12 +103,25 @@ def _cleanup_orphan_locks(openclaw_home: Path, dry_run: bool) -> tuple[int, int]
     return len(lock_paths), removed
 
 
-def _backup_db(db_path: Path, dry_run: bool) -> str | None:
+def _backup_db(db_path: Path, dry_run: bool, max_backups: int = 5) -> str | None:
+    """Create a timestamped backup of the database, keeping only the most recent N."""
     if dry_run or not db_path.exists():
         return None
     ts = time.strftime("%Y%m%dT%H%M%S")
-    backup_path = db_path.with_name(f"{db_path.name}.bak-runtime-reconcile-{ts}")
+    prefix = f"{db_path.name}.bak-runtime-reconcile-"
+    backup_path = db_path.with_name(f"{prefix}{ts}")
     shutil.copy2(db_path, backup_path)
+    # Prune old backups to prevent disk bloat (was generating ~100/day at 800KB each)
+    existing = sorted(
+        [p for p in db_path.parent.glob(f"{prefix}*") if p != backup_path],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for stale in existing[max(0, max_backups - 1):]:
+        try:
+            stale.unlink(missing_ok=True)
+        except Exception:
+            pass
     return str(backup_path)
 
 

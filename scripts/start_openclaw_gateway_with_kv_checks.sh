@@ -5,7 +5,7 @@ set -euo pipefail
 # This script is intended to be used as the launchd ProgramArguments entrypoint.
 
 CONFIG_PATH="${HOME}/.openclaw/openclaw.json"
-SHADOW_PLUGIN_PATH="/Users/louishyman/openclaw/plugins/ollama"
+SHADOW_PLUGIN_PATH="/Users/louishyman/openclaw/openclaw-ollama-kv-cache-plugin"
 LEGACY_SHADOW_PLUGIN_PATH="/Users/louishyman/openclaw-ollama-kv-cache-plugin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_KEY="${OPENCLAW_OLLAMA_MODEL_KEY:-ollama/gemma4:26b}"

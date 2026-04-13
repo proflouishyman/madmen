@@ -197,3 +197,28 @@ Solution
 Updated `scripts/apply_polly_resilience_addendum.sh` to set Backer health model explicitly (`BACKER_HEALTH_MODEL_KEY`, default `ollama/gemma4:26b`) on both cron create and edit paths, ensuring the job never persists on Polly's dedicated provider lane.
 Notes
 This preserves the addendum invariant: Polly lane is reserved for Polly direct-response reliability; infrastructure health automation runs on the regular local Ollama lane.
+
+[2026-04-13] - Comprehensive Stability Overhaul: 3-Tier Model Routing, Cron Cleanup, Disk Bloat Fix
+Problem
+Multiple interlocking instability issues accumulated: (1) reconciler backup files grew to 399 copies / 325 MB (actual DB is 2.1 MB); (2) plugin path in openclaw.json pointed to standalone ~/openclaw-ollama-kv-cache-plugin instead of repo subfolder ~/openclaw/openclaw-ollama-kv-cache-plugin; (3) no fallback model configured after Codex credits exhausted (empty fallbacks array); (4) pre-digest healthcheck cron still competing on Polly dedicated lane (ollama-polly/qwen2.5:7b-instruct); (5) three duplicate otto-outlook-sweep cron jobs created by the agent itself; (6) morning digest timing out at 967s with oversized ACP-dependent prompt; (7) multiple cron jobs missing model/timeout/tools constraints; (8) backer had 2 stale running sessions.
+Root Cause
+Organic growth without centralized model allocation policy. Cron jobs defaulted to the primary gemma4:26b model regardless of task complexity. Simple exec-and-return tasks (run script, return stdout) consumed the same GPU resources and inference queue as complex classification tasks. The reconciler created a full database backup on every 5-minute health tick without pruning, causing unbounded disk growth. Plugin path drifted when the plugin was moved into the repo subfolder but the config was not updated. Codex removal left no fallback path.
+Solution
+Implemented 3-tier model routing:
+- Tier 1 (Polly fast): ollama-polly/qwen2.5:7b-instruct on port 11435 (unchanged, user-facing only)
+- Tier 2 (Light): ollama/qwen2.5:7b on port 11434, keepAlive=10m, num_batch=8 — for deterministic exec-and-return crons (backer-health, maxwell-backfill, rex-sync, rex-backfill, backer-nightly-backup, otto-draft-check, backer-daily-audit, pre-digest-healthcheck)
+- Tier 3 (Heavy): ollama/gemma4:26b on port 11434, keepAlive=45m, num_batch=16 — for classification/reasoning tasks (gmail-sweep, otto-outlook-sweep, otto-slack-digest, morning-digest, otto-outcome-sweep)
+
+Additional fixes:
+- Deleted 398 stale reconciler backups (325 MB → 11 MB)
+- Updated _backup_db() to auto-prune, keeping only 5 most recent backups
+- Fixed plugin path to repo subfolder
+- Added ollama/qwen2.5:7b as fallback for gemma4:26b (no Codex available)
+- Registered qwen2.5:7b in ollama provider models list
+- Removed 3 duplicate otto-outlook-sweep cron jobs (agent-created)
+- Slimmed morning digest prompt to query polly.db and read files directly instead of ACP delegation to 6 agents, raised timeout to 600s
+- Added explicit model, timeout, thinking=off, lightContext, and toolsAllow to all unconstrained cron jobs
+- Cleaned 2 stale backer running sessions
+- Cleared all stale consecutiveErrors counters
+Notes
+The light tier (qwen2.5:7b) with num_batch=8 and keepAlive=10m yields GPU quickly to the heavy tier. Tasks routed to the light tier barely need LLM reasoning — they parse a simple "run this command and return stdout" instruction. This frees gemma4:26b context/cache for tasks that actually need classification and reasoning. The KV cache plugin's keep_alive injection benefits both tiers independently.
