@@ -177,3 +177,23 @@ Solution
 Updated `scripts/test_otto_suite.sh` to strip non-JSON preamble content and parse from the first `{` before counting Otto cron jobs.
 Notes
 After the fix, `Otto cron coverage` passes reliably while preserving strict JSON parsing of the payload body.
+
+[2026-04-11] - Polly Session Model Drift Caused Slow/Unreliable Replies
+Problem
+Polly intermittently stopped responding promptly and routed direct turns through slower fallback paths, including lock contention cascades after retries.
+Root Cause
+OpenClaw persisted an `auto` session-level model override on `agent:polly:main` (`modelOverride=gemma4:26b`), pinning Polly away from the configured fast lane. When retries overlapped, a stale running task could hold the session lock and block new turns.
+Solution
+Added a guard to `scripts/backer_health_tick.sh` that detects and clears drifted Polly `auto` model overrides from `~/.openclaw/agents/polly/sessions/sessions.json` so Polly returns to configured routing. Added health telemetry field `polly_route_reset_applied` to confirm automatic correction in logs.
+Notes
+A one-time runtime cleanup was also applied: stale Polly running task reconciled as `lost`, stale session lock healed via gateway restart, and Backer auth profiles were synced with `ollama-polly:local` marker to prevent repeated auth fallback noise.
+
+[2026-04-11] - Backer Health Cron Persisted On Polly Lane
+Problem
+`backer-health-5m` repeatedly stuck in `running`, reported `already-running`, and starved cron recovery while Maxwell ingestion freshness regressed.
+Root Cause
+The cron job retained a stale `model` override (`ollama-polly/qwen2.5:7b-instruct`) from prior config state. `openclaw cron edit` does not clear model overrides unless a new model is explicitly set, so Backer continued competing on Polly's dedicated lane and inherited Polly-timeout/fallback churn.
+Solution
+Updated `scripts/apply_polly_resilience_addendum.sh` to set Backer health model explicitly (`BACKER_HEALTH_MODEL_KEY`, default `ollama/gemma4:26b`) on both cron create and edit paths, ensuring the job never persists on Polly's dedicated provider lane.
+Notes
+This preserves the addendum invariant: Polly lane is reserved for Polly direct-response reliability; infrastructure health automation runs on the regular local Ollama lane.

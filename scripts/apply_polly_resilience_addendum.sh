@@ -16,6 +16,8 @@ PLIST_PATH="${HOME}/Library/LaunchAgents/com.ollama.polly.plist"
 POLLY_MODEL="qwen2.5:7b-instruct"
 POLLY_URL="http://127.0.0.1:11435"
 POLLY_PROVIDER_KEY="ollama-polly/qwen2.5:7b-instruct"
+# Non-obvious invariant: Backer health must not consume Polly's dedicated lane.
+BACKER_HEALTH_MODEL_KEY="${OPENCLAW_BACKER_HEALTH_MODEL_KEY:-ollama/gemma4:26b}"
 
 log() {
   printf '[polly-addendum] %s\n' "$*"
@@ -849,6 +851,7 @@ EOF
   if [[ -n "${backer_health_id}" ]]; then
     openclaw cron edit "${backer_health_id}" \
       --every "5m" \
+      --model "${BACKER_HEALTH_MODEL_KEY}" \
       --thinking off \
       --timeout-seconds 420 \
       --tools "exec,read,write" \
@@ -860,6 +863,7 @@ EOF
       --agent backer \
       --name "backer-health-5m" \
       --every "5m" \
+      --model "${BACKER_HEALTH_MODEL_KEY}" \
       --thinking off \
       --timeout-seconds 420 \
       --tools "exec,read,write" \

@@ -101,6 +101,22 @@ Operational integration:
   - `stale_sessions_cleared`
   - `stale_locks_detected`
   - `stale_lock_heal_triggered`
+  - `polly_route_reset_applied`
+
+Polly route drift guard:
+
+- Backer health tick now clears stale Polly session `modelOverride` values when
+  OpenClaw auto-fallback pins Polly away from its configured fast lane.
+- This prevents persistent model drift for `agent:polly:main` after transient
+  fallback events.
+
+Backer cron lane guard:
+
+- `scripts/apply_polly_resilience_addendum.sh` now pins `backer-health-5m` to
+  `BACKER_HEALTH_MODEL_KEY` (default `ollama/gemma4:26b`) on both create and
+  edit paths.
+- This prevents stale cron model overrides from leaving Backer health on
+  `ollama-polly/*`, which must remain Polly-only.
 
 Validation:
 

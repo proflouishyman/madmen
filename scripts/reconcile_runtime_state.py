@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Iterable
 
 
-RUNTIMES_TO_RECONCILE = ("cli", "subagent")
+DEFAULT_RUNTIMES_TO_RECONCILE = ("cli", "subagent")
+DEFAULT_CRON_MARKER_SETTLE_SECONDS = 15
 
 
 @dataclass
@@ -34,6 +35,9 @@ class ReconcileSummary:
     running_candidates: int
     tasks_marked_lost: int
     duplicate_cron_marked_lost: int
+    cron_jobs_seen: int
+    cron_running_markers_seen: int
+    cron_running_markers_cleared: int
     session_files_seen: int
     session_entries_running: int
     sessions_marked_idle: int
@@ -109,13 +113,19 @@ def _backup_db(db_path: Path, dry_run: bool) -> str | None:
 
 
 def _reconcile_running_tasks(
-    db_path: Path, grace_seconds: int, dry_run: bool, reason: str
+    db_path: Path,
+    grace_seconds: int,
+    dry_run: bool,
+    reason: str,
+    runtimes: tuple[str, ...] = DEFAULT_RUNTIMES_TO_RECONCILE,
 ) -> tuple[int, int]:
     if not db_path.exists():
         return 0, 0
+    if not runtimes:
+        return 0, 0
     now_ms = int(time.time() * 1000)
     cutoff_ms = now_ms - max(0, grace_seconds) * 1000
-    placeholders = ",".join("?" for _ in RUNTIMES_TO_RECONCILE)
+    placeholders = ",".join("?" for _ in runtimes)
     # Non-obvious invariant: a `running` row must not already have terminal markers.
     # If ended_at/terminal_outcome is present, treat it as stale immediately.
     where_clause = (
@@ -127,7 +137,7 @@ def _reconcile_running_tasks(
         "OR terminal_outcome IS NOT NULL"
         ")"
     )
-    params: Iterable[object] = tuple(RUNTIMES_TO_RECONCILE) + (cutoff_ms,)
+    params: Iterable[object] = tuple(runtimes) + (cutoff_ms,)
 
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
@@ -238,6 +248,92 @@ def _recent_running_task_keys(db_path: Path, cutoff_ms: int) -> set[str]:
     return {str(row[0]) for row in rows if row and row[0]}
 
 
+def _running_cron_sources(db_path: Path) -> set[str]:
+    if not db_path.exists():
+        return set()
+    query = (
+        "SELECT source_id "
+        "FROM task_runs "
+        "WHERE runtime='cron' "
+        "AND status='running' "
+        "AND source_id IS NOT NULL "
+        "AND source_id <> ''"
+    )
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(query).fetchall()
+    return {str(row[0]) for row in rows if row and row[0]}
+
+
+def _reconcile_cron_running_markers(
+    openclaw_home: Path,
+    db_path: Path,
+    grace_seconds: int,
+    dry_run: bool,
+    settle_seconds: int = DEFAULT_CRON_MARKER_SETTLE_SECONDS,
+) -> tuple[int, int, int]:
+    jobs_path = openclaw_home / "cron" / "jobs.json"
+    if not jobs_path.exists():
+        return 0, 0, 0
+
+    try:
+        payload = json.loads(jobs_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0, 0, 0
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list):
+        return 0, 0, 0
+
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - max(0, grace_seconds) * 1000
+    active_sources = _running_cron_sources(db_path)
+
+    jobs_seen = 0
+    markers_seen = 0
+    markers_cleared = 0
+    changed = False
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        jobs_seen += 1
+        state = job.get("state")
+        if not isinstance(state, dict):
+            continue
+        running_at = state.get("runningAtMs")
+        if not isinstance(running_at, (int, float)):
+            continue
+
+        markers_seen += 1
+        source_id = str(job.get("id") or "")
+
+        if source_id and source_id in active_sources:
+            continue
+
+        # Non-obvious invariant: keep very recent markers briefly to avoid
+        # racing the scheduler while the corresponding task row is being written.
+        running_at_ms = int(running_at)
+        marker_settle_cutoff_ms = now_ms - max(0, settle_seconds) * 1000
+        if running_at_ms > marker_settle_cutoff_ms:
+            continue
+
+        # If no live task exists for this source and the marker has passed the
+        # short settle window, clear it even when within the broader grace window.
+        if running_at_ms > cutoff_ms:
+            state.pop("runningAtMs", None)
+            markers_cleared += 1
+            changed = True
+            continue
+
+        state.pop("runningAtMs", None)
+        markers_cleared += 1
+        changed = True
+
+    if changed and not dry_run:
+        jobs_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    return jobs_seen, markers_seen, markers_cleared
+
+
 def _reconcile_running_sessions(
     openclaw_home: Path, db_path: Path, grace_seconds: int, dry_run: bool
 ) -> tuple[int, int, int]:
@@ -314,6 +410,23 @@ def main() -> int:
         action="store_true",
         help="Run reconciliation even when OpenClaw processes are active.",
     )
+    parser.add_argument(
+        "--include-cron-running",
+        action="store_true",
+        help=(
+            "Also reconcile stale cron rows in task_runs. "
+            "Recommended for startup recovery with --grace-seconds 0."
+        ),
+    )
+    parser.add_argument(
+        "--cron-marker-settle-seconds",
+        type=int,
+        default=DEFAULT_CRON_MARKER_SETTLE_SECONDS,
+        help=(
+            "Minimum marker age before clearing a cron runningAtMs marker that "
+            "has no matching live task row."
+        ),
+    )
     args = parser.parse_args()
 
     openclaw_home = Path(args.openclaw_home).expanduser()
@@ -325,21 +438,39 @@ def main() -> int:
     candidates = 0
     marked = 0
     duplicate_cron_marked = 0
+    cron_jobs_seen = 0
+    cron_running_markers_seen = 0
+    cron_running_markers_cleared = 0
     store_count = 0
     running_entries = 0
     sessions_marked = 0
     if not skip:
+        runtimes = DEFAULT_RUNTIMES_TO_RECONCILE + (
+            ("cron",) if args.include_cron_running else ()
+        )
         db_backup = _backup_db(db_path, args.dry_run)
         candidates, marked = _reconcile_running_tasks(
             db_path=db_path,
             grace_seconds=args.grace_seconds,
             dry_run=args.dry_run,
             reason=args.reason,
+            runtimes=runtimes,
         )
         duplicate_cron_marked = _reconcile_duplicate_running_cron_tasks(
             db_path=db_path,
             dry_run=args.dry_run,
             reason=f"{args.reason} (duplicate cron run)",
+        )
+        (
+            cron_jobs_seen,
+            cron_running_markers_seen,
+            cron_running_markers_cleared,
+        ) = _reconcile_cron_running_markers(
+            openclaw_home=openclaw_home,
+            db_path=db_path,
+            grace_seconds=args.grace_seconds,
+            dry_run=args.dry_run,
+            settle_seconds=args.cron_marker_settle_seconds,
         )
         store_count, running_entries, sessions_marked = _reconcile_running_sessions(
             openclaw_home=openclaw_home,
@@ -359,6 +490,9 @@ def main() -> int:
         running_candidates=candidates,
         tasks_marked_lost=marked + duplicate_cron_marked,
         duplicate_cron_marked_lost=duplicate_cron_marked,
+        cron_jobs_seen=cron_jobs_seen,
+        cron_running_markers_seen=cron_running_markers_seen,
+        cron_running_markers_cleared=cron_running_markers_cleared,
         session_files_seen=store_count,
         session_entries_running=running_entries,
         sessions_marked_idle=sessions_marked,

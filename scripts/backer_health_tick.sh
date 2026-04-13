@@ -10,11 +10,15 @@ ALERTS_FILE="${BACKER_WS}/alerts/urgent.yaml"
 LOG_DIR="${BACKER_WS}/logs"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLLY_MODEL="${POLLY_MODEL:-qwen2.5:7b-instruct}"
+POLLY_PROVIDER_ID="${POLLY_PROVIDER_ID:-ollama-polly}"
+POLLY_SESSION_KEY="${POLLY_SESSION_KEY:-agent:polly:main}"
 POLLY_PLIST="${HOME}/Library/LaunchAgents/com.ollama.polly.plist"
 OPENCLAW_GATEWAY_LABEL="${OPENCLAW_GATEWAY_LABEL:-ai.openclaw.gateway}"
 UID_NUM="$(id -u)"
 STALE_RECONCILE_GRACE_SECONDS="${BACKER_STALE_RECONCILE_GRACE_SECONDS:-420}"
 LOCK_MAX_AGE_SECONDS="${BACKER_LOCK_MAX_AGE_SECONDS:-240}"
+PRIMARY_PROBE_MODEL="${PRIMARY_PROBE_MODEL:-qwen2.5:7b}"
+PRIMARY_PROBE_TIMEOUT_SECONDS="${PRIMARY_PROBE_TIMEOUT_SECONDS:-20}"
 
 mkdir -p "${LOG_DIR}" "$(dirname "${ALERTS_FILE}")"
 [[ -f "${ALERTS_FILE}" ]] || printf '[]\n' >"${ALERTS_FILE}"
@@ -26,6 +30,15 @@ timestamp_utc() {
 probe_url() {
   local url="$1"
   curl -sf --max-time 10 "${url}" >/dev/null
+}
+
+probe_generate() {
+  local url="$1"
+  local model="$2"
+  local timeout_seconds="${3:-30}"
+  curl -sf --max-time "${timeout_seconds}" "${url}/api/generate" \
+    -d "{\"model\":\"${model}\",\"prompt\":\"ping\",\"stream\":false}" \
+    >/dev/null
 }
 
 restart_polly_lane() {
@@ -43,6 +56,81 @@ restart_primary_lane() {
 
 restart_openclaw_gateway() {
   launchctl kickstart -k "gui/${UID_NUM}/${OPENCLAW_GATEWAY_LABEL}" >/dev/null 2>&1 || true
+}
+
+normalize_polly_session_model_override() {
+  python3 - "${OPENCLAW_HOME}" "${POLLY_SESSION_KEY}" "${POLLY_PROVIDER_ID}" "${POLLY_MODEL}" <<'PY'
+import json
+import pathlib
+import sys
+import time
+
+openclaw_home = pathlib.Path(sys.argv[1]).expanduser()
+session_key = sys.argv[2]
+desired_provider = sys.argv[3]
+desired_model = sys.argv[4]
+store_path = openclaw_home / "agents" / "polly" / "sessions" / "sessions.json"
+
+if not store_path.exists():
+    print(json.dumps({"changed": False, "reason": "store-missing"}))
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+except Exception:
+    print(json.dumps({"changed": False, "reason": "store-unreadable"}))
+    raise SystemExit(0)
+
+record = payload.get(session_key)
+if not isinstance(record, dict):
+    print(json.dumps({"changed": False, "reason": "session-missing"}))
+    raise SystemExit(0)
+
+override_source = str(record.get("modelOverrideSource") or "").lower()
+override_model = str(record.get("modelOverride") or "")
+override_provider = str(record.get("providerOverride") or "")
+
+# Non-obvious invariant: fallback-selected "auto" overrides can pin Polly away
+# from the fast lane across turns. Clear only when that drift is detected.
+drifted_auto_override = (
+    override_source == "auto"
+    and (
+        (override_model and override_model != desired_model)
+        or (override_provider and override_provider != desired_provider)
+    )
+)
+
+if not drifted_auto_override:
+    print(
+        json.dumps(
+            {
+                "changed": False,
+                "reason": "no-drift",
+                "overrideSource": override_source,
+                "overrideModel": override_model,
+                "overrideProvider": override_provider,
+            }
+        )
+    )
+    raise SystemExit(0)
+
+for field in ("modelOverride", "modelOverrideSource", "providerOverride"):
+    record.pop(field, None)
+record["updatedAt"] = int(time.time() * 1000)
+payload[session_key] = record
+store_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+print(
+    json.dumps(
+        {
+            "changed": True,
+            "sessionKey": session_key,
+            "clearedModelOverride": override_model,
+            "clearedProviderOverride": override_provider,
+        }
+    )
+)
+PY
 }
 
 detect_stale_session_locks() {
@@ -143,6 +231,14 @@ stale_tasks_marked=0
 stale_sessions_cleared=0
 stale_locks_detected=0
 stale_lock_heal_triggered=false
+polly_route_reset_applied=false
+
+if route_reset_json="$(normalize_polly_session_model_override 2>/dev/null)"; then
+  polly_route_reset_applied="$(
+    python3 -c 'import json,sys; print(str(bool(json.loads(sys.argv[1]).get("changed", False))).lower())' \
+      "${route_reset_json}" 2>/dev/null || echo false
+  )"
+fi
 
 if stale_lock_json="$(detect_stale_session_locks 2>/dev/null)"; then
   stale_locks_detected="$(
@@ -156,13 +252,16 @@ if stale_lock_json="$(detect_stale_session_locks 2>/dev/null)"; then
   fi
 fi
 
-if ! probe_url "http://127.0.0.1:11434/api/tags"; then
+if ! probe_url "http://127.0.0.1:11434/api/tags" \
+  || ! probe_generate "http://127.0.0.1:11434" "${PRIMARY_PROBE_MODEL}" "${PRIMARY_PROBE_TIMEOUT_SECONDS}"; then
   sleep 1
-  if ! probe_url "http://127.0.0.1:11434/api/tags"; then
+  if ! probe_url "http://127.0.0.1:11434/api/tags" \
+    || ! probe_generate "http://127.0.0.1:11434" "${PRIMARY_PROBE_MODEL}" "${PRIMARY_PROBE_TIMEOUT_SECONDS}"; then
     restart_primary_lane
     primary_restarted=true
     sleep 2
-    if ! probe_url "http://127.0.0.1:11434/api/tags"; then
+    if ! probe_url "http://127.0.0.1:11434/api/tags" \
+      || ! probe_generate "http://127.0.0.1:11434" "${PRIMARY_PROBE_MODEL}" "${PRIMARY_PROBE_TIMEOUT_SECONDS}"; then
       primary_ok=false
     fi
   fi
@@ -224,6 +323,6 @@ if [[ "${primary_ok}" != true || "${polly_ok}" != true || "${prewarm_ok}" != tru
   status="degraded"
 fi
 
-summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered}}"
+summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered},\"polly_route_reset_applied\":${polly_route_reset_applied}}"
 append_log "${summary}"
 printf '%s\n' "${summary}"

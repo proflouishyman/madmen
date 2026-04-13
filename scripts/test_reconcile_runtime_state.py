@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
@@ -46,6 +47,16 @@ def _init_db(path: Path) -> None:
             """
         )
         conn.commit()
+
+
+def _write_jobs(path: Path, jobs: list[dict]) -> None:
+    cron_dir = path / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"jobs": jobs, "updatedAtMs": int(time.time() * 1000)}
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 class ReconcileRuntimeStateTests(unittest.TestCase):
@@ -118,6 +129,46 @@ class ReconcileRuntimeStateTests(unittest.TestCase):
             with sqlite3.connect(db_path) as conn:
                 status = conn.execute("SELECT status FROM task_runs WHERE task_id = 't2'").fetchone()[0]
             self.assertEqual(status, "running")
+
+    def test_include_cron_runtime_marks_stale_cron_running_row(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "runs.sqlite"
+            _init_db(db_path)
+            now_ms = int(time.time() * 1000)
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO task_runs (
+                      task_id, runtime, source_id, status, created_at, started_at, last_event_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "cron-stale-1",
+                        "cron",
+                        "job-x",
+                        "running",
+                        now_ms - 100_000,
+                        now_ms - 100_000,
+                        now_ms - 100_000,
+                    ),
+                )
+                conn.commit()
+
+            candidates, marked = RECONCILE._reconcile_running_tasks(
+                db_path=db_path,
+                grace_seconds=60,
+                dry_run=False,
+                reason="test include cron",
+                runtimes=("cli", "subagent", "cron"),
+            )
+            self.assertEqual(candidates, 1)
+            self.assertEqual(marked, 1)
+
+            with sqlite3.connect(db_path) as conn:
+                status = conn.execute(
+                    "SELECT status FROM task_runs WHERE task_id = 'cron-stale-1'"
+                ).fetchone()[0]
+            self.assertEqual(status, "lost")
 
     def test_duplicate_running_cron_rows_keep_newest(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -214,6 +265,169 @@ class ReconcileRuntimeStateTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(status_c3, "lost")
             self.assertEqual(status_c4, "timed_out")
+
+    def test_stale_cron_running_marker_without_live_task_is_cleared(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_path = Path(tmpdir) / ".openclaw"
+            db_path = home_path / "tasks" / "runs.sqlite"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _init_db(db_path)
+            now_ms = int(time.time() * 1000)
+
+            _write_jobs(
+                home_path,
+                [
+                    {
+                        "id": "job-1",
+                        "state": {
+                            "runningAtMs": now_ms - 120_000,
+                            "lastStatus": "ok",
+                        },
+                    }
+                ],
+            )
+
+            jobs_seen, markers_seen, markers_cleared = RECONCILE._reconcile_cron_running_markers(
+                openclaw_home=home_path,
+                db_path=db_path,
+                grace_seconds=60,
+                dry_run=False,
+            )
+            self.assertEqual(jobs_seen, 1)
+            self.assertEqual(markers_seen, 1)
+            self.assertEqual(markers_cleared, 1)
+
+            payload = json.loads((home_path / "cron" / "jobs.json").read_text(encoding="utf-8"))
+            state = payload["jobs"][0]["state"]
+            self.assertNotIn("runningAtMs", state)
+
+    def test_cron_running_marker_with_live_task_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_path = Path(tmpdir) / ".openclaw"
+            db_path = home_path / "tasks" / "runs.sqlite"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _init_db(db_path)
+            now_ms = int(time.time() * 1000)
+
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO task_runs (
+                      task_id, runtime, source_id, status, created_at, started_at, last_event_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "live-1",
+                        "cron",
+                        "job-1",
+                        "running",
+                        now_ms - 5_000,
+                        now_ms - 5_000,
+                        now_ms - 4_000,
+                    ),
+                )
+                conn.commit()
+
+            _write_jobs(
+                home_path,
+                [
+                    {
+                        "id": "job-1",
+                        "state": {
+                            "runningAtMs": now_ms - 120_000,
+                            "lastStatus": "ok",
+                        },
+                    }
+                ],
+            )
+
+            jobs_seen, markers_seen, markers_cleared = RECONCILE._reconcile_cron_running_markers(
+                openclaw_home=home_path,
+                db_path=db_path,
+                grace_seconds=60,
+                dry_run=False,
+            )
+            self.assertEqual(jobs_seen, 1)
+            self.assertEqual(markers_seen, 1)
+            self.assertEqual(markers_cleared, 0)
+
+            payload = json.loads((home_path / "cron" / "jobs.json").read_text(encoding="utf-8"))
+            state = payload["jobs"][0]["state"]
+            self.assertIn("runningAtMs", state)
+
+    def test_recent_marker_without_live_task_clears_after_settle_window(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_path = Path(tmpdir) / ".openclaw"
+            db_path = home_path / "tasks" / "runs.sqlite"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _init_db(db_path)
+            now_ms = int(time.time() * 1000)
+
+            _write_jobs(
+                home_path,
+                [
+                    {
+                        "id": "job-1",
+                        "state": {
+                            "runningAtMs": now_ms - 20_000,
+                            "lastStatus": "ok",
+                        },
+                    }
+                ],
+            )
+
+            # Broad grace window keeps genuinely stale markers untouched, but
+            # no-live-task markers should still clear once past settle seconds.
+            jobs_seen, markers_seen, markers_cleared = RECONCILE._reconcile_cron_running_markers(
+                openclaw_home=home_path,
+                db_path=db_path,
+                grace_seconds=420,
+                dry_run=False,
+                settle_seconds=15,
+            )
+            self.assertEqual(jobs_seen, 1)
+            self.assertEqual(markers_seen, 1)
+            self.assertEqual(markers_cleared, 1)
+
+            payload = json.loads((home_path / "cron" / "jobs.json").read_text(encoding="utf-8"))
+            state = payload["jobs"][0]["state"]
+            self.assertNotIn("runningAtMs", state)
+
+    def test_recent_marker_within_settle_window_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_path = Path(tmpdir) / ".openclaw"
+            db_path = home_path / "tasks" / "runs.sqlite"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            _init_db(db_path)
+            now_ms = int(time.time() * 1000)
+
+            _write_jobs(
+                home_path,
+                [
+                    {
+                        "id": "job-1",
+                        "state": {
+                            "runningAtMs": now_ms - 5_000,
+                            "lastStatus": "ok",
+                        },
+                    }
+                ],
+            )
+
+            jobs_seen, markers_seen, markers_cleared = RECONCILE._reconcile_cron_running_markers(
+                openclaw_home=home_path,
+                db_path=db_path,
+                grace_seconds=420,
+                dry_run=False,
+                settle_seconds=15,
+            )
+            self.assertEqual(jobs_seen, 1)
+            self.assertEqual(markers_seen, 1)
+            self.assertEqual(markers_cleared, 0)
+
+            payload = json.loads((home_path / "cron" / "jobs.json").read_text(encoding="utf-8"))
+            state = payload["jobs"][0]["state"]
+            self.assertIn("runningAtMs", state)
 
 
 if __name__ == "__main__":
