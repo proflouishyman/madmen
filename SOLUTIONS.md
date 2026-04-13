@@ -1,3 +1,13 @@
+[2026-04-13] - Polly Fabricating Calendar Events and Agent Status
+Problem
+When asked 'Which calendar are you reading?' or 'Sitrep', Polly invented a non-existent openclaw calendar CLI, fabricated fake events (Meeting with Client, Team Check-In) and made up agent statuses instead of reading polly.db.
+Root Cause
+SOUL.md said to query polly.db but never explained HOW — no DB path, no SQL, no exec command. The sandbox SOUL.md was an old truncated version (66 lines vs 140 lines in workspace) missing all resilience rules and database instructions. Polly also lacked tools.allow: exec in openclaw.json so she could not have run sqlite3 even if she tried.
+Solution
+Added Live Queries section to SOUL.md with exact sqlite3 exec commands for calendar, escalations, tasks, agent_health, and drafts. Added explicit rule: NEVER fabricate data. Synced full workspace SOUL.md to sandbox SOUL.md (was badly out of date). Added Database Queries section to TOOLS.md (both workspace and sandbox) with copy-paste ready sqlite3 commands. Added tools.allow: exec/read/write to polly in openclaw.json.
+Notes
+Sandbox SOUL.md and workspace SOUL.md must always stay in sync. The sandbox version is what Polly reads during isolated sessions.
+
 [2026-04-13] - Otto outlook-sweep Cron Looping and Hallucinating Paths
 Problem
 otto-outlook-sweep cron was running for 33+ minutes on each cycle. It used gemma4:26b on a 900s timeout, and the open-ended message told Otto to write AppleScript inline. Otto repeatedly tried to write scripts to hallucinated paths (/Users/lou_hi_syman/) and encountered AppleScript syntax errors in a loop.
