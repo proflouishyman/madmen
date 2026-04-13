@@ -245,3 +245,30 @@ Plugin audit:
 - Generated shim (bundled-ollama-entry.js) verified valid for /opt/homebrew OpenClaw install
 Notes
 Each Ollama instance must be a separate OS process to hold its own GPU memory region. The OLLAMA_MAX_LOADED_MODELS=1 on Polly and light lanes prevents accidental multi-model loading. The shared OLLAMA_MODELS path means all three instances read from the same model cache on disk — no duplication. The setup_light_ollama_lane.sh must be run on the user's Mac (requires launchctl GUI session). After running, cron jobs referencing ollama/qwen2.5:7b are automatically migrated to ollama-light/qwen2.5:7b.
+
+[2026-04-13] - Light Lane Context Window Too Small (4096 < 16000 Minimum)
+Problem
+After setting up the light Ollama lane on port 11436, two cron jobs (backer-health-5m and gmail-backfill-12m-20m) started failing with "FailoverError: Model context window too small (4096 tokens). Minimum is 16000."
+Root Cause
+The light lane launchd plist set OLLAMA_CONTEXT_LENGTH=4096 and the openclaw.json provider registration set contextWindow=4096. OpenClaw requires a minimum 16000-token context window for any agent turn, even simple exec-and-return tasks, because the system prompt and framing consume baseline tokens.
+Solution
+Updated setup_light_ollama_lane.sh to use OLLAMA_CONTEXT_LENGTH=16384 and contextWindow=16384. Patched the live openclaw.json and launchd plist to match. The 16K context is still small enough to keep GPU memory low (~5 GB) while meeting OpenClaw's minimum.
+Notes
+Re-run setup_light_ollama_lane.sh to apply the plist change and restart the light instance.
+
+[2026-04-13] - polly.db Empty: Missing Ingestion Pipeline
+Problem
+polly.db had zero rows in all 16 tables despite Maxwell, Otto, and Rex producing data for days. The morning digest cron (polly-morning-digest) queried empty tables and timed out. The ingestion-watch-15m cron was disabled and had never worked — its prompt was a vague description with no actual SQL/Python implementation.
+Root Cause
+No script existed to bridge agent output files (gmail-intake-latest.json, sweep-log.yaml, connections.db) with polly.db's structured tables. The ingestion-watch-15m cron relied on the LLM itself to figure out how to read JSON files and write SQL, which consistently failed or timed out because the task requires deterministic parsing, not LLM reasoning.
+Solution
+Created scripts/polly_ingest.py — a deterministic Python script that:
+- Reads gmail-intake-latest.json: urgent emails → escalations table, today emails → tasks table
+- Reads otto sweep-log.yaml: URGENT/PRIORITY items → escalations table
+- Reads cron/jobs.json: per-agent latest status → agent_health table
+- Reads connections.db: contacts with 90+ day inactivity → waiting_on table
+- Cleans resolved/dismissed items older than 7 days
+- Uses stable SHA-256 IDs for idempotency (safe to re-run)
+Re-enabled ingestion-watch cron (renamed to ingestion-watch-20m), now running every 20 minutes on the light lane, calling polly_ingest.py directly. Timeout reduced from 420s to 120s since the script runs in ~2 seconds.
+Notes
+The morning digest should now find data in polly.db. Events, commitments, and drafts tables will populate as Otto writes structured sweep entries and agents create drafts. The stale-contact check (waiting_on) seeds 20 entries initially — these can be resolved by Polly or Louis.

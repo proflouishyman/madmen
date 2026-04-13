@@ -53,7 +53,7 @@ write_light_launchd_plist() {
       <key>OLLAMA_KV_CACHE_TYPE</key>
       <string>q8_0</string>
       <key>OLLAMA_CONTEXT_LENGTH</key>
-      <string>4096</string>
+      <string>16384</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -128,7 +128,7 @@ if "ollama-light" not in providers:
                 "name": "qwen2.5:7b",
                 "input": ["text"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 4096,
+                "contextWindow": 16384,
             }
         ],
     }
