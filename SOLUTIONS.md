@@ -387,3 +387,13 @@ Root Cause
 OpenClaw exec security="allowlist" mode checks the command against the agent's TOOLS.md allowed command list. The script path was never listed in backer's TOOLS.md.
 Solution
 Added the health script and polly_ingest.py to backer's TOOLS.md under "Health Scripts (exec-allowlisted)". Also added the light lane Ollama tools (port 11436 curl check) and launchctl restart commands for the light lane.
+
+[2026-04-13] - Wire Rex Telegram Bot into OpenClaw Gateway
+Problem
+Rex agent existed in the agent definitions and had a working cron (rex-backfill-365d-20m) but had no Telegram bot — it was unreachable via direct message.
+Root Cause
+No Telegram bot had been created for Rex, so no account entry or route binding existed in openclaw.json.
+Solution
+Created Telegram bot @Rex_314_bot via BotFather. Added rex route binding to the bindings array (channel:telegram, accountId:rex → agentId:rex). Added rex account under channels.telegram.accounts with botToken, dmPolicy:pairing, allowFrom/groupAllowFrom restricted to Louis's user ID (8162289158), groupPolicy:allowlist, streaming:partial — matching the established pattern used by worf, polly, maxwell, and otto.
+Notes
+Gateway restart required to pick up the new binding and account. Bot description/about/profile picture can be set via BotFather /help commands.

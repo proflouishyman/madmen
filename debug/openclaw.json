@@ -330,6 +330,14 @@
         "channel": "telegram",
         "accountId": "otto"
       }
+    },
+    {
+      "type": "route",
+      "agentId": "rex",
+      "match": {
+        "channel": "telegram",
+        "accountId": "rex"
+      }
     }
   ],
   "commands": {
@@ -425,6 +433,21 @@
           "enabled": true,
           "dmPolicy": "pairing",
           "botToken": "8546798177:AAEwdKNWFWSs4G5799ZqU_R0J2SUvjFiiIs",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "rex": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8724877218:AAHEcX4PWacr5D7HcyGO3EYd19TuwYWHdyk",
           "allowFrom": [
             "8162289158"
           ],
