@@ -255,4 +255,56 @@ else
   echo "[kv-startup] warning: unable to inspect ollama plugin before gateway boot" >&2
 fi
 
+# Function purpose: Inject a one-shot startup-notification cron job so Polly
+# announces on Telegram that OpenClaw has restarted. The fireAt is set 90 seconds
+# in the future to allow the gateway and Polly session to fully initialize first.
+JOBS_JSON="${HOME}/.openclaw/cron/jobs.json"
+if [[ -f "${JOBS_JSON}" ]]; then
+  FIRE_AT_MS=$(( $(date +%s) * 1000 + 90000 ))
+  python3 - "${JOBS_JSON}" "${FIRE_AT_MS}" <<'PY'
+import json, sys, pathlib, uuid
+
+jobs_path = pathlib.Path(sys.argv[1])
+fire_at_ms = int(sys.argv[2])
+
+data = json.loads(jobs_path.read_text())
+jobs = data.get("jobs", []) if isinstance(data, dict) else data
+
+# Remove any previous stale startup-notify jobs
+jobs = [j for j in jobs if j.get("name") != "polly-startup-notify"]
+
+# Inject fresh one-shot job
+jobs.append({
+    "id": str(uuid.uuid4()),
+    "agentId": "polly",
+    "name": "polly-startup-notify",
+    "enabled": True,
+    "createdAtMs": fire_at_ms - 90000,
+    "updatedAtMs": fire_at_ms - 90000,
+    "schedule": {"kind": "once"},
+    "sessionTarget": "isolated",
+    "wakeMode": "now",
+    "payload": {
+        "kind": "agentTurn",
+        "message": "OpenClaw has just restarted. Send a Telegram message to Louis saying exactly: \"OpenClaw is back online.\" Nothing else.",
+        "model": "ollama-polly/qwen2.5:7b-instruct",
+        "toolsAllow": ["exec", "read", "write"],
+        "thinking": "off",
+        "timeoutSeconds": 60,
+        "lightContext": True
+    },
+    "delivery": {"mode": "announce", "channel": "last"},
+    "state": {"nextRunAtMs": fire_at_ms, "consecutiveErrors": 0}
+})
+
+if isinstance(data, dict):
+    data["jobs"] = jobs
+    jobs_path.write_text(json.dumps(data, indent=2))
+else:
+    jobs_path.write_text(json.dumps(jobs, indent=2))
+
+print("[startup-notify] injected polly-startup-notify cron job (fireAt +90s)")
+PY
+fi
+
 exec openclaw gateway run "$@"
