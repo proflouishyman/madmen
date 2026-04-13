@@ -14,6 +14,7 @@ TODAY="$(date '+%Y-%m-%d')"
 # ── Run the AppleScript sweep ──────────────────────────────────────────────────
 SWEEP="$(osascript <<'APPLESCRIPT' 2>/dev/null
 tell application "Microsoft Outlook"
+  with timeout of 45 seconds
   set cutoff to (current date) - (48 * 60 * 60)
   set msgs to every message of inbox whose time received >= cutoff
   -- Sort by most recent first; cap at 10
@@ -48,6 +49,7 @@ tell application "Microsoft Outlook"
     set output to output & "\n"
   end repeat
   return output
+  end timeout
 end tell
 APPLESCRIPT
 )"
