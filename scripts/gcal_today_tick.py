@@ -48,25 +48,24 @@ def write_result(status: str, events: list, error: str = "") -> None:
 
 
 def fetch_via_gog() -> list:
-    """Call gog calendar events list for today + tomorrow.
+    """Call gog calendar events for today + tomorrow.
 
-    gog interface (if calendar scope is available):
-        gog -a <account> calendar events list \
-            --time-min <RFC3339> --time-max <RFC3339> \
-            --max-results 50 --single-events --order-by startTime -j
+    gog calendar interface:
+        gog calendar events <calendarId> --from <iso> --to <iso> --account <email> --json
+
+    calendarId is "primary" for the default Google Calendar.
+    Requires that gog has been authorized with calendar scope:
+        gog auth add lhyman@gmail.com --services gmail,calendar,drive,contacts,docs,sheets
     """
     start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
     end   = start + timedelta(days=2)
 
     cmd = [
-        "gog", "-a", ACCOUNT,
-        "calendar", "events", "list",
-        "--time-min", rfc3339(start),
-        "--time-max", rfc3339(end),
-        "--max-results", "50",
-        "--single-events",
-        "--order-by", "startTime",
-        "-j",
+        "gog", "calendar", "events", "primary",
+        "--from", rfc3339(start),
+        "--to",   rfc3339(end),
+        "--account", ACCOUNT,
+        "--json",
     ]
 
     try:
@@ -79,21 +78,32 @@ def fetch_via_gog() -> list:
     if cp.returncode != 0:
         stderr = (cp.stderr or cp.stdout or "").strip()
         # Detect missing scope clearly
-        if "insufficient authentication scopes" in stderr.lower() \
-                or "calendar" in stderr.lower() and "scope" in stderr.lower():
+        if any(phrase in stderr.lower() for phrase in [
+            "insufficient authentication scopes",
+            "calendar",
+            "scope",
+            "unauthorized",
+            "forbidden",
+            "permission",
+        ]):
             raise RuntimeError(
                 "Google Calendar scope not yet granted. "
-                "Re-authorize gog with calendar.readonly scope:\n"
-                "  openclaw accounts setup --account lhyman@gmail.com --scope calendar.readonly"
+                "Re-authorize gog with calendar scope:\n"
+                "  gog auth add lhyman@gmail.com --services gmail,calendar,drive,contacts,docs,sheets\n"
+                "(This will open a browser OAuth prompt to re-grant permissions.)"
             )
         raise RuntimeError(f"gog calendar exited {cp.returncode}: {stderr[:300]}")
+
+    # gog may output nothing if no events (empty day) — treat as empty list
+    if not cp.stdout.strip():
+        return []
 
     try:
         raw = json.loads(cp.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"gog returned invalid JSON: {exc}") from exc
 
-    # gog returns { items: [...] } or the items list directly
+    # gog returns a list of event objects directly, or { items: [...] }
     items = raw.get("items", raw) if isinstance(raw, dict) else raw
     if not isinstance(items, list):
         raise RuntimeError(f"Unexpected gog calendar shape: {type(items)}")

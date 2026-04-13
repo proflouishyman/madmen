@@ -1,3 +1,13 @@
+[2026-04-13] - gcal_today_tick.py Used Wrong gog Calendar Flags
+Problem
+gcal_today_tick.py called gog with Google Calendar API raw flags (--time-min, --time-max, --max-results, --single-events, --order-by, -j) which are not valid gog CLI flags. The script would fail immediately on any calendar fetch. Additionally, the error message told the user to run `openclaw accounts setup --scope calendar.readonly` which is a non-existent command.
+Root Cause
+gog wraps the Google Calendar API with its own simplified flag set: `gog calendar events <calendarId> --from <iso> --to <iso> --account <email> --json`. The initial implementation incorrectly used raw API query parameters instead of gog's CLI interface.
+Solution
+Rewrote the gog invocation in gcal_today_tick.py to: `gog calendar events primary --from <iso> --to <iso> --account <email> --json`. Updated the error message to give the correct re-auth command: `gog auth add lhyman@gmail.com --services gmail,calendar,drive,contacts,docs,sheets`. Also added empty-output handling (gog returns nothing on empty days rather than `[]`).
+Notes
+The calendarId "primary" refers to the user's default Google Calendar. To add calendar scope to an existing gog auth, re-run `gog auth add` with all services including calendar — this triggers a browser OAuth re-grant without removing existing tokens.
+
 [2026-04-08] - Polly Could Not Route To Forge
 Problem
 Polly reported that ACP routing to `forge` was unavailable, first with "ACP runtime backend is not configured" and then with `acpx exited with code 1`.
