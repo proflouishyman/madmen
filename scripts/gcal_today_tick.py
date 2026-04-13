@@ -103,10 +103,38 @@ def fetch_via_gog() -> list:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"gog returned invalid JSON: {exc}") from exc
 
-    # gog returns a list of event objects directly, or { items: [...] }
-    items = raw.get("items", raw) if isinstance(raw, dict) else raw
-    if not isinstance(items, list):
-        raise RuntimeError(f"Unexpected gog calendar shape: {type(items)}")
+    # gog may return:
+    #   - A list of event objects directly
+    #   - { "items": [...] }      (Google Calendar API shape)
+    #   - { "events": [...] }     (gog simplified shape)
+    #   - { "data": [...] }
+    #   - A wrapper dict — find the first list-valued key
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        # Try known keys first, then scan for any list value
+        for key in ("items", "events", "data", "results"):
+            if key in raw and isinstance(raw[key], list):
+                items = raw[key]
+                break
+        else:
+            # Find the first key whose value is a list
+            list_keys = [k for k, v in raw.items() if isinstance(v, list)]
+            if list_keys:
+                items = raw[list_keys[0]]
+            elif not raw:
+                # Empty dict = no events
+                items = []
+            else:
+                # Write the raw response to a debug file for inspection
+                debug_path = OUTPUT.parent / "gcal-debug.json"
+                debug_path.write_text(json.dumps(raw, indent=2) + "\n")
+                raise RuntimeError(
+                    f"Unexpected gog calendar shape: {list(raw.keys())} "
+                    f"(full response saved to {debug_path})"
+                )
+    else:
+        raise RuntimeError(f"Unexpected gog response type: {type(raw)}")
 
     events = []
     for item in items:
