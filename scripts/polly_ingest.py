@@ -576,6 +576,116 @@ def cleanup_resolved(conn: sqlite3.Connection, dry_run: bool) -> int:
     return count
 
 
+# ── Live Status Cache → SOUL.md ───────────────────────────────────────────────
+
+SOUL_MD = WORKSPACES / "polly-workspace" / "SOUL.md"
+_LIVE_STATUS_START = "<!-- LIVE_STATUS_START -->"
+_LIVE_STATUS_END   = "<!-- LIVE_STATUS_END -->"
+
+
+def write_sitrep_cache(conn: sqlite3.Connection) -> None:
+    """Query polly.db and write current status into SOUL.md between marker comments.
+
+    This avoids the need for Polly to call exec during conversational turns —
+    the data is embedded directly in the system context at bootstrap time.
+    """
+    if not SOUL_MD.exists():
+        log.warning("SOUL.md not found at %s, skipping sitrep cache write", SOUL_MD)
+        return
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # ── Calendar: next 48 hours ───────────────────────────────────────────────
+    events = conn.execute(
+        """SELECT datetime, title, type FROM events
+           WHERE date(datetime) >= date('now')
+             AND date(datetime) <= date('now', '+1 day')
+           ORDER BY datetime"""
+    ).fetchall()
+
+    if events:
+        cal_lines = []
+        for row in events:
+            dt = row[0][:16] if row[0] else "?"
+            title = row[1] or "(untitled)"
+            etype = row[2] or ""
+            cal_lines.append(f"  - {dt}  {title}" + (f" [{etype}]" if etype else ""))
+        cal_block = "\n".join(cal_lines)
+    else:
+        cal_block = "  (no events in next 48h)"
+
+    # ── Agent health ──────────────────────────────────────────────────────────
+    health_rows = conn.execute(
+        """SELECT agent_id, last_status, last_error, updated_at
+           FROM agent_health ORDER BY updated_at DESC"""
+    ).fetchall()
+
+    if health_rows:
+        health_lines = []
+        for row in health_rows:
+            agent = row[0]
+            status = row[1] or "unknown"
+            err = f" — {row[2]}" if row[2] and status == "error" else ""
+            updated = (row[3] or "")[:16]
+            health_lines.append(f"  - {agent}: {status}{err} (updated {updated})")
+        health_block = "\n".join(health_lines)
+    else:
+        health_block = "  (no health data)"
+
+    # ── Escalations ───────────────────────────────────────────────────────────
+    esc_rows = conn.execute(
+        """SELECT type, summary, created_at FROM escalations
+           WHERE status = 'pending' ORDER BY created_at DESC LIMIT 10"""
+    ).fetchall()
+
+    if esc_rows:
+        esc_lines = [f"  - {r[1]}" for r in esc_rows]
+        esc_block = "\n".join(esc_lines)
+    else:
+        esc_block = "  (none pending)"
+
+    # ── Open tasks ────────────────────────────────────────────────────────────
+    task_rows = conn.execute(
+        """SELECT title, owner_agent, due, status FROM tasks
+           WHERE status = 'open' ORDER BY due ASC LIMIT 10"""
+    ).fetchall()
+
+    if task_rows:
+        task_lines = [f"  - {r[0]} (due {r[2] or 'TBD'}, owner: {r[1]})" for r in task_rows]
+        task_block = "\n".join(task_lines)
+    else:
+        task_block = "  (no open tasks)"
+
+    # ── Assemble block ────────────────────────────────────────────────────────
+    block = f"""{_LIVE_STATUS_START}
+*Auto-updated by polly_ingest.py — last refresh: {now_utc}*
+
+### 📅 Calendar (next 48h)
+{cal_block}
+
+### 🔧 Agent Health
+{health_block}
+
+### 🚨 Escalations (pending)
+{esc_block}
+
+### 📋 Open Tasks
+{task_block}
+{_LIVE_STATUS_END}"""
+
+    # ── Write into SOUL.md between markers ───────────────────────────────────
+    soul = SOUL_MD.read_text()
+    if _LIVE_STATUS_START in soul and _LIVE_STATUS_END in soul:
+        before = soul[:soul.index(_LIVE_STATUS_START)]
+        after  = soul[soul.index(_LIVE_STATUS_END) + len(_LIVE_STATUS_END):]
+        SOUL_MD.write_text(before + block + after)
+    else:
+        # Markers missing — append block at end
+        SOUL_MD.write_text(soul.rstrip() + "\n\n" + block + "\n")
+
+    log.info("Sitrep cache written to SOUL.md (%s)", now_utc)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -605,6 +715,10 @@ def main() -> None:
     health_count = ingest_agent_health(conn, args.dry_run)
     stale_count = ingest_stale_contacts(conn, args.dry_run)
     cleanup_count = cleanup_resolved(conn, args.dry_run)
+
+    # Write current db state into SOUL.md so Polly has it in bootstrap context
+    if not args.dry_run:
+        write_sitrep_cache(conn)
 
     conn.close()
 

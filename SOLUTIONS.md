@@ -1,3 +1,13 @@
+[2026-04-13] - Polly Sitrep Fabrication: qwen2.5:7b Ignores SOUL.md Exec Instructions
+Problem
+Polly continued to hallucinate fake calendar events ("Meeting with Client 9am", "Team Check-In", "Lunch Break") and fabricated agent statuses ("Otto: Currently active and working on coding tasks") on every Sitrep request, even after SOUL.md was updated with explicit sqlite3 exec instructions.
+Root Cause
+The qwen2.5:7b-instruct model only calls the exec tool when the USER MESSAGE explicitly says "Execute exactly this command via exec: ...". SOUL.md instructions (system context) to "run exec first" are silently ignored. Additionally, every Telegram turn is immediately compacted to "No prior history" — the model starts completely fresh each time with only SOUL.md + the new message. With just "Sitrep" as the user message, the model generates a text response without calling any tools.
+Solution
+Changed the data delivery mechanism: polly_ingest.py (which already runs every 20 min) now calls write_sitrep_cache() at the end of each run. This function queries polly.db for events, agent health, escalations, and open tasks, then writes the results directly into a <!-- LIVE_STATUS_START/END --> block embedded in SOUL.md. The HARD RULES section at the top of SOUL.md now instructs: "Use ONLY the Live Status section at the bottom — do not invent anything." The 7b model reliably reports data that's already in its system context without needing to call any tools.
+Notes
+The Live Status block is at most 20 minutes stale (ingest interval). This is acceptable for sitrep purposes. The exec-based sqlite3 queries are still in SOUL.md as a fallback for direct polly.db queries, but the primary path is now the embedded Live Status block. The sandbox SOUL.md is kept in sync manually after each workspace SOUL.md change.
+
 [2026-04-13] - Polly Fabricating Calendar Events and Agent Status
 Problem
 When asked 'Which calendar are you reading?' or 'Sitrep', Polly invented a non-existent openclaw calendar CLI, fabricated fake events (Meeting with Client, Team Check-In) and made up agent statuses instead of reading polly.db.
