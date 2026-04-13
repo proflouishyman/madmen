@@ -226,6 +226,10 @@ def ingest_agent_health(conn: sqlite3.Connection, dry_run: bool) -> int:
     now = datetime.now(timezone.utc).isoformat()
     for agent_id, stats in agent_stats.items():
         if not dry_run:
+            # Check whether this agent already has a health row (upsert vs new insert)
+            existing = conn.execute(
+                "SELECT 1 FROM agent_health WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
             conn.execute(
                 """INSERT INTO agent_health
                    (agent_id, last_success_at, last_status, last_error, items_processed, updated_at)
@@ -245,7 +249,9 @@ def ingest_agent_health(conn: sqlite3.Connection, dry_run: bool) -> int:
                     now,
                 ),
             )
-        count += 1
+            # Only count as "new" on first insert; updates are routine health refreshes
+            if not existing:
+                count += 1
         log.info("Agent health: %s → %s", agent_id, stats["last_status"])
 
     if not dry_run:

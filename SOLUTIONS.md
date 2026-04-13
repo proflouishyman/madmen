@@ -1,3 +1,13 @@
+[2026-04-13] - polly_ingest agent_health Idempotency Bug
+Problem
+polly_ingest.py total_new counted 5 new items on every run because agent_health rows were processed as new even when they were upserts of existing rows.
+Root Cause
+The INSERT ON CONFLICT DO UPDATE always runs for all 5 agents every cycle. count += 1 fired unconditionally, including for rows that were updated rather than inserted for the first time.
+Solution
+Added a pre-check (SELECT 1 FROM agent_health WHERE agent_id = ?) before the upsert. count is only incremented when the row did not already exist. Health rows now upsert silently every run without inflating total_new.
+Notes
+idempotency test now passes: total_new=0 on second run.
+
 [2026-04-13] - polly_ingest.py gmail=0 Due to Wrong Field Name + exec Allowlist Miss
 Problem
 polly_ingest.py always returned gmail=0 even though gmail-intake-latest.json had 20 threads with real classifications. Separately, backer-health-5m cron returned "exec denied: allowlist miss" on every run.
