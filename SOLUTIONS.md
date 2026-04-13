@@ -1,3 +1,13 @@
+[2026-04-13] - polly_ingest.py gmail=0 Due to Wrong Field Name + exec Allowlist Miss
+Problem
+polly_ingest.py always returned gmail=0 even though gmail-intake-latest.json had 20 threads with real classifications. Separately, backer-health-5m cron returned "exec denied: allowlist miss" on every run.
+Root Cause
+Two independent bugs: (1) Maxwell writes the classification field as "class" in gmail-intake-latest.json, but polly_ingest.py read "classification" — a field that never existed, causing all threads to default to "fyi" and zero new records. (2) OpenClaw's exec tool with security="allowlist" checks a configured allowlist in openclaw.json, not TOOLS.md. The "exec-allowlisted" heading in TOOLS.md caused the LLM to use security="allowlist" mode, but no allowlist was configured. Also, backer/otto/rex lacked tools.allow: ["exec"] in openclaw.json (unlike maxwell which had it).
+Solution
+(1) Fixed field lookup to `thread.get("class", thread.get("classification", "fyi"))` to handle both. (2) Added tools.allow: ["exec", "read", "write"] to backer, otto, rex in openclaw.json. Renamed TOOLS.md section heading from "exec-allowlisted" to plain "Scripts" with explicit note to use ask:"off" not security:"allowlist". Updated both workspace and sandbox TOOLS.md for all affected agents.
+Notes
+The sandbox TOOLS.md at .openclaw/sandboxes/agent-*/TOOLS.md is the file read during actual agent runs — not the workspace TOOLS.md. Both must be kept in sync.
+
 [2026-04-13] - gcal_today_tick.py Used Wrong gog Calendar Flags
 Problem
 gcal_today_tick.py called gog with Google Calendar API raw flags (--time-min, --time-max, --max-results, --single-events, --order-by, -j) which are not valid gog CLI flags. The script would fail immediately on any calendar fetch. Additionally, the error message told the user to run `openclaw accounts setup --scope calendar.readonly` which is a non-existent command.

@@ -73,7 +73,8 @@ def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
 
     for thread in threads:
         thread_id = thread.get("id", "")
-        classification = thread.get("classification", "fyi")
+        # Maxwell writes "class" not "classification"; support both field names
+        classification = thread.get("class", thread.get("classification", "fyi"))
         subject = thread.get("subject", "(no subject)")
         sender = thread.get("from", "unknown")
         date_str = thread.get("date", "")
