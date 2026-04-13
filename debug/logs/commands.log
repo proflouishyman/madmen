@@ -1,0 +1,4 @@
+{"timestamp":"2026-04-11T02:02:01.264Z","action":"reset","sessionKey":"agent:otto:main","senderId":"unknown","source":"gateway:agent"}
+{"timestamp":"2026-04-11T21:38:54.991Z","action":"reset","sessionKey":"agent:polly:main","senderId":"8162289158","source":"telegram"}
+{"timestamp":"2026-04-11T23:38:17.589Z","action":"reset","sessionKey":"agent:polly:main","senderId":"8162289158","source":"telegram"}
+{"timestamp":"2026-04-11T23:39:30.557Z","action":"reset","sessionKey":"agent:polly:main","senderId":"8162289158","source":"telegram"}

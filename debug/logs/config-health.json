@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "/Users/louishyman/.openclaw/openclaw.json": {
+      "lastKnownGood": {
+        "hash": "7093fa5b0f606ce62eea0f9a93bc5c2a28c3e8ef9cfd9699147c53a2f0cebbff",
+        "bytes": 11782,
+        "mtimeMs": 1775956566730.5632,
+        "ctimeMs": 1775956566730.5632,
+        "dev": "16777229",
+        "ino": "35488089",
+        "mode": 384,
+        "nlink": 1,
+        "uid": 502,
+        "gid": 20,
+        "hasMeta": true,
+        "gatewayMode": "local",
+        "observedAt": "2026-04-12T01:16:09.078Z"
+      },
+      "lastObservedSuspiciousSignature": null
+    }
+  }
+}

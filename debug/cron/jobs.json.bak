@@ -1,0 +1,560 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "6ace1cd1-8018-4d5d-9798-8905db698a2a",
+      "agentId": "polly",
+      "name": "polly-morning-digest",
+      "enabled": true,
+      "createdAtMs": 1775668181764,
+      "updatedAtMs": 1776079251218,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 7 * * *",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Assemble morning digest.\n\nStep 1 — Query polly.db first (no ACP):\n- urgent escalations (pending)\n- overdue commitments (open due < today)\n- pending drafts (pending_approval)\n- overdue waiting-ons (open due < today)\n- agent_health for all configured agents\n\nStep 2 — ACP queries (90 second timeout each):\n- maxwell overnight_summary\n- otto overnight_summary\n- finn today_summary\n- weber upcoming_deadlines (48h)\n- john project_status\n- emma project_status\n\nStep 3 — For ACP timeouts, use polly.db agent_health.last_success_at.\nNever emit placeholders ([Insert], [Pending], [TODO], [MISSING], [N/A - awaiting).\nIf placeholders appear, rebuild degraded digest before send.\n\nStep 4 — Assemble max 20 lines.\nIf any agent is degraded, include:\n⚠️ System status: <agent> DEGRADED — section unavailable.\n\nStep 5 — Send via Telegram and update polly.db:\n- mark included escalations polly_batched=1\n- upsert agent_health for responders",
+        "model": "openai-codex/gpt-5.3-codex",
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "thinking": "low",
+        "timeoutSeconds": 420,
+        "lightContext": true
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776164400000,
+        "lastRunAtMs": 1776078283540,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 967678,
+        "lastDeliveryStatus": "unknown",
+        "consecutiveErrors": 2,
+        "lastErrorReason": "timeout",
+        "lastError": "cron: job execution timed out"
+      }
+    },
+    {
+      "id": "ac6a2f54-25b0-490e-a749-bc0347f3a8eb",
+      "agentId": "polly",
+      "name": "polly-pre-digest-healthcheck",
+      "enabled": true,
+      "createdAtMs": 1775672779418,
+      "updatedAtMs": 1776079844312,
+      "schedule": {
+        "kind": "cron",
+        "expr": "50 6 * * *",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run mandatory pre-digest health check before morning digest.\n1. Verify gateway and telegram channel health.\n2. Verify maxwell and otto freshness via ACP health_status.\n3. If any failure is detected, append an alert item to\n   /Users/louishyman/.openclaw/workspaces/backer-workspace/alerts/urgent.yaml\n   and mark system degraded for digest.\n4. Do not skip digest; only force degraded mode when needed.",
+        "model": "ollama-polly/qwen2.5:7b-instruct",
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "thinking": "low",
+        "timeoutSeconds": 300,
+        "lightContext": true
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776163800000,
+        "lastRunAtMs": 1776079251218,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 593094,
+        "lastDeliveryStatus": "unknown",
+        "consecutiveErrors": 1,
+        "lastError": "cron: job execution timed out",
+        "lastErrorReason": "timeout"
+      }
+    },
+    {
+      "id": "37234939-3257-41a4-9d09-8c5a0ab14050",
+      "agentId": "maxwell",
+      "name": "gmail-sweep-5m",
+      "enabled": true,
+      "createdAtMs": 1775677349255,
+      "updatedAtMs": 1776085079664,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 1800000,
+        "anchorMs": 1775759536457
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run in this session only (no subagents, no cron calls). Use exec+gog to read up to 20 inbox threads from the last 24h for lhyman@gmail.com. Classify each as urgent/today/this_week/fyi/spam_or_noise. Write normalized JSON to /Users/louishyman/.openclaw/workspaces/maxwell-workspace/memory/gmail-intake-latest.json and append a timestamped sweep file in the same memory directory. Keep mailbox read-only and do not send outbound messages. Return one compact summary line with counts per class and threads_scanned.",
+        "timeoutSeconds": 420,
+        "lightContext": true,
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "thinking": "off"
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "lastRunAtMs": 1776084559213,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 520451,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 16,
+        "nextRunAtMs": 1776088679664,
+        "lastErrorReason": "timeout",
+        "lastError": "cron: job execution timed out"
+      }
+    },
+    {
+      "id": "e9f2a862-d75d-4dfb-a2a3-db4841a4f152",
+      "agentId": "rex",
+      "name": "rex-contacts-sync-6h",
+      "enabled": true,
+      "createdAtMs": 1775678786585,
+      "updatedAtMs": 1776072103107,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 21600000,
+        "anchorMs": 1775805545063
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Execute exactly this command once via exec (do not call cron tools), then return ONLY the command stdout verbatim with no edits and no commentary: python3 /Users/louishyman/.openclaw/workspaces/rex-workspace/state/rex_sync_contacts.py --account lhyman@gmail.com --days 14 --max-per-page 100 --max-pages 1 --checkpoint-file /Users/louishyman/.openclaw/workspaces/rex-workspace/state/rex_sync_checkpoint_14d.json --backoff-base-seconds 180 --backoff-max-seconds 7200 --cycle-holdoff-seconds 21600",
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "thinking": "off",
+        "timeoutSeconds": 600,
+        "lightContext": true
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "lastRunAtMs": 1776071102321,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 1000786,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 3,
+        "nextRunAtMs": 1776092702321,
+        "lastErrorReason": "timeout",
+        "lastError": "cron: job execution timed out"
+      }
+    },
+    {
+      "id": "35ed85e7-fcf4-483c-9642-4dba462a32a2",
+      "agentId": "rex",
+      "name": "rex-backfill-365d-20m",
+      "enabled": true,
+      "createdAtMs": 1775679792970,
+      "updatedAtMs": 1776087187152,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 1200000,
+        "anchorMs": 1775801872315
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Execute exactly this command once via exec (do not call cron tools), then return ONLY the command stdout verbatim with no edits and no commentary: python3 ~/.openclaw/workspaces/rex-workspace/state/rex_sync_contacts.py --account lhyman@gmail.com --days 365 --max-per-page 100 --max-pages 2 --checkpoint-file ~/.openclaw/workspaces/rex-workspace/state/rex_sync_checkpoint_365d.json --backoff-base-seconds 180 --backoff-max-seconds 7200 --cycle-holdoff-seconds 86400",
+        "timeoutSeconds": 900,
+        "lightContext": true,
+        "thinking": "off",
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ]
+      },
+      "state": {
+        "lastRunAtMs": 1776087114991,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 72161,
+        "lastDeliveryStatus": "not-delivered",
+        "consecutiveErrors": 0,
+        "nextRunAtMs": 1776088314991,
+        "lastDelivered": false
+      },
+      "delivery": {
+        "mode": "none"
+      }
+    },
+    {
+      "id": "d33320bb-20e7-4559-baec-bc141f13ff5e",
+      "agentId": "otto",
+      "name": "otto-slack-digest",
+      "enabled": true,
+      "createdAtMs": 1775682695230,
+      "updatedAtMs": 1776085575709,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 9 * * 1-5",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Read CES Slack channels for the past 24 hours. Identify any threads needing Louis's input or response. Send 3-bullet summary to Polly via acp. Only escalate if something genuinely needs Louis — do not create noise."
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776171600000,
+        "lastRunAtMs": 1776085200005,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 375704,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-delivered",
+        "consecutiveErrors": 0
+      }
+    },
+    {
+      "id": "d82aef74-97a5-4bc6-bd83-11847b21a58f",
+      "agentId": "otto",
+      "name": "otto-outlook-sweep",
+      "enabled": true,
+      "createdAtMs": 1775682695241,
+      "updatedAtMs": 1776084557108,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 8-18 * * 1-5",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Outlook quick sweep (read-only mailbox): use AppleScript to inspect up to 5 most recent inbox messages from the last 24h, classify as URGENT/PRIORITY/ROUTINE, and append one timestamped line to /Users/louishyman/.openclaw/workspaces/otto-workspace/state/sweep-log.yaml. If URGENT item is older than 48h unanswered, send one concise ACP escalation to Polly. No outbound email send.",
+        "timeoutSeconds": 900,
+        "lightContext": true,
+        "thinking": "off"
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776088157108,
+        "lastRunAtMs": 1776083514985,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 1042123,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 5,
+        "lastErrorReason": "timeout",
+        "runningAtMs": 1776088157111
+      }
+    },
+    {
+      "id": "f10251bb-bf97-4d33-8bb3-e0fa6857042e",
+      "agentId": "otto",
+      "name": "otto-outcome-sweep",
+      "enabled": true,
+      "createdAtMs": 1775682695279,
+      "updatedAtMs": 1775859924607,
+      "schedule": {
+        "kind": "cron",
+        "expr": "30 16 * * 5",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Check outcome-log.yaml for Outlook-sourced sent drafts in the last 7 days where response_received is pending. For each: search Outlook inbox via AppleScript for any reply to that subject thread. Update outcome and latency. Mark no-response if 7+ days. Silent — no output to Louis unless he asks."
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776457800000,
+        "lastRunAtMs": 1775857928701,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 1995906,
+        "lastError": "FallbackSummaryError: All models failed (2): ollama/gemma4:26b: LLM request timed out. (timeout) | openai-codex/gpt-5.3-codex: LLM request timed out. (timeout)",
+        "lastErrorReason": "timeout",
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 1
+      }
+    },
+    {
+      "id": "312834f3-7eb7-4219-8451-5079e444871c",
+      "agentId": "otto",
+      "name": "otto-draft-check",
+      "enabled": true,
+      "createdAtMs": 1775682695285,
+      "updatedAtMs": 1775863571636,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 18 * * 1-5",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Check Outlook Drafts folder via AppleScript for any unsent agent-created drafts. Send reminder to Polly via acp."
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776117600000,
+        "lastRunAtMs": 1775862533311,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 1038325,
+        "lastDelivered": false,
+        "lastDeliveryStatus": "not-delivered",
+        "consecutiveErrors": 0
+      }
+    },
+    {
+      "id": "292d2a4f-fd28-4b06-bd94-29283a902753",
+      "agentId": "maxwell",
+      "name": "gmail-backfill-12m-20m",
+      "enabled": true,
+      "createdAtMs": 1775694140207,
+      "updatedAtMs": 1776086130209,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 1200000,
+        "anchorMs": 1775804867016
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Execute exactly this command once via exec (do not call cron tools), then return ONLY the command stdout verbatim with no edits and no commentary: /Users/louishyman/openclaw/scripts/maxwell_backfill_tick.py --account lhyman@gmail.com --state-file /Users/louishyman/.openclaw/workspaces/maxwell-workspace/memory/gmail-backfill-12m-checkpoint.json --run-dir /Users/louishyman/.openclaw/workspaces/maxwell-workspace/memory --max-per-page 100 --max-pages 1 --backoff-base-seconds 180 --backoff-max-seconds 7200 --cycle-holdoff-seconds 86400",
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "thinking": "off",
+        "timeoutSeconds": 420,
+        "lightContext": true
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "lastRunAtMs": 1776085578307,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 551902,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 12,
+        "nextRunAtMs": 1776089730209,
+        "lastErrorReason": "timeout",
+        "lastError": "cron: job execution timed out"
+      }
+    },
+    {
+      "id": "3ccc95b8-5528-4b13-997f-cdbe344024e8",
+      "agentId": "polly",
+      "name": "ingestion-watch-15m",
+      "enabled": false,
+      "createdAtMs": 1775694147376,
+      "updatedAtMs": 1775876660382,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 3600000,
+        "anchorMs": 1775759544590
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Ingestion watch (read-only): read ONLY latest artifacts from Maxwell/Otto/Rex memory/state files, update urgent queue and pending-approval ledger in Polly memory, and append a concise 6-bullet operations snapshot for Louis. Keep output brief and deterministic.",
+        "timeoutSeconds": 420,
+        "lightContext": true,
+        "thinking": "off",
+        "toolsAllow": [
+          "read",
+          "write"
+        ]
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "lastRunAtMs": 1775876240367,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 420015,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 9,
+        "lastErrorReason": "timeout",
+        "lastError": "cron: job execution timed out"
+      }
+    },
+    {
+      "id": "a1b6c504-97d1-463e-a1ee-2eed2af5aa03",
+      "agentId": "backer",
+      "name": "backer-health-5m",
+      "enabled": true,
+      "createdAtMs": 1775913641880,
+      "updatedAtMs": 1776088125802,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 300000,
+        "anchorMs": 1775956365407
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Execute exactly this command once via exec (do not call cron tools), then return\nONLY the command stdout with no edits or commentary:\n/Users/louishyman/openclaw/scripts/backer_health_tick.sh",
+        "thinking": "off",
+        "timeoutSeconds": 420,
+        "lightContext": true,
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ],
+        "model": "ollama/gemma4:26b"
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "lastRunAtMs": 1776088120414,
+        "lastRunStatus": "ok",
+        "lastStatus": "ok",
+        "lastDurationMs": 5388,
+        "lastDeliveryStatus": "not-delivered",
+        "consecutiveErrors": 0,
+        "nextRunAtMs": 1776088420414,
+        "lastDelivered": false
+      }
+    },
+    {
+      "id": "ab188e7d-a5a1-4c0a-8ddd-6e7cd1b41fbb",
+      "agentId": "backer",
+      "name": "backer-daily-audit",
+      "enabled": true,
+      "createdAtMs": 1775913647877,
+      "updatedAtMs": 1776063687140,
+      "schedule": {
+        "kind": "cron",
+        "expr": "20 2 * * *",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run daily infrastructure audit.\n1. Validate polly.db integrity: PRAGMA integrity_check.\n2. Checkpoint polly.db WAL: PRAGMA wal_checkpoint(TRUNCATE).\n3. Capture cron health summary and stale-error counts.\n4. Summarize into backer-workspace/logs/<date>-daily-audit.log.\n5. Escalate only if integrity check fails or repeated cron failures persist.",
+        "thinking": "off",
+        "timeoutSeconds": 300,
+        "lightContext": true,
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ]
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776147600000,
+        "lastRunAtMs": 1776062677333,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 1009807,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 1,
+        "lastError": "cron: job execution timed out",
+        "lastErrorReason": "timeout"
+      }
+    },
+    {
+      "id": "77bad3f2-c7b9-4a19-8f51-bdc71d7cc7d4",
+      "agentId": "backer",
+      "name": "backer-nightly-backup",
+      "enabled": true,
+      "createdAtMs": 1775913651819,
+      "updatedAtMs": 1776065697065,
+      "schedule": {
+        "kind": "cron",
+        "expr": "40 2 * * *",
+        "tz": "America/New_York"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run nightly DB checkpoint maintenance.\n1. Execute PRAGMA wal_checkpoint(TRUNCATE) on polly.db.\n2. Confirm result is successful.\n3. Log output in backer-workspace/logs/<date>-nightly-backup.log.",
+        "thinking": "off",
+        "timeoutSeconds": 180,
+        "lightContext": true,
+        "toolsAllow": [
+          "exec",
+          "read",
+          "write"
+        ]
+      },
+      "delivery": {
+        "mode": "none",
+        "channel": "last"
+      },
+      "state": {
+        "nextRunAtMs": 1776148800000,
+        "lastRunAtMs": 1776064724315,
+        "lastRunStatus": "error",
+        "lastStatus": "error",
+        "lastDurationMs": 972750,
+        "lastDeliveryStatus": "not-requested",
+        "consecutiveErrors": 1,
+        "lastError": "cron: job execution timed out",
+        "lastErrorReason": "timeout"
+      }
+    }
+  ]
+}

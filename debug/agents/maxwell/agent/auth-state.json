@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "lastGood": {
+    "openai-codex": "openai-codex:default"
+  },
+  "usageStats": {
+    "openai-codex:default": {
+      "errorCount": 1,
+      "lastUsed": 1775954487907,
+      "lastFailureAt": 1776068933292,
+      "failureCounts": {
+        "rate_limit": 1
+      },
+      "cooldownUntil": 1776068948292,
+      "cooldownReason": "rate_limit",
+      "cooldownModel": "gpt-5.3-codex"
+    }
+  }
+}

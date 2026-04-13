@@ -1,0 +1,472 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.4.9",
+    "lastTouchedAt": "2026-04-12T00:02:01.240Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-03-16T20:36:24.350Z",
+    "lastRunVersion": "2026.3.13",
+    "lastRunCommand": "doctor",
+    "lastRunMode": "local"
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "qwen3-coder:30b",
+            "name": "qwen3-coder:30b",
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 16384
+          },
+          {
+            "id": "gemma4:26b",
+            "name": "gemma4:26b",
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768
+          },
+          {
+            "id": "minimax-m2.5:cloud",
+            "name": "minimax-m2.5:cloud",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 204800,
+            "maxTokens": 128000
+          }
+        ]
+      },
+      "ollama-polly": {
+        "baseUrl": "http://127.0.0.1:11435",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "qwen2.5:7b-instruct",
+            "name": "qwen2.5:7b-instruct",
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/gemma4:26b",
+        "fallbacks": [
+          "openai-codex/gpt-5.3-codex"
+        ]
+      },
+      "models": {
+        "openai-codex/gpt-5.3-codex": {},
+        "ollama/qwen3.5:27b": {},
+        "ollama/gemma3:12b": {},
+        "ollama/qwen2.5:7b": {},
+        "ollama/gemma4:26b": {
+          "params": {
+            "ollama": {
+              "keepAlive": "45m",
+              "options": {
+                "num_batch": 16
+              },
+              "reliability": {
+                "requestTimeoutMs": 90000,
+                "maxRetries": 1,
+                "retryBackoffMs": 250
+              }
+            }
+          }
+        },
+        "ollama-polly/qwen2.5:7b-instruct": {
+          "params": {
+            "ollama": {
+              "keepAlive": "-1",
+              "options": {
+                "num_batch": 16
+              },
+              "reliability": {
+                "requestTimeoutMs": 3000,
+                "maxRetries": 0,
+                "retryBackoffMs": 100
+              }
+            }
+          }
+        }
+      },
+      "compaction": {
+        "mode": "safeguard",
+        "reserveTokens": 2048
+      },
+      "sandbox": {
+        "mode": "off"
+      },
+      "llm": {
+        "idleTimeoutSeconds": 240
+      },
+      "subagents": {
+        "maxConcurrent": 2
+      },
+      "maxConcurrent": 1
+    },
+    "list": [
+      {
+        "id": "main"
+      },
+      {
+        "id": "worf",
+        "name": "worf",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/worf-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/worf/agent"
+      },
+      {
+        "id": "forge",
+        "name": "forge",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/forge-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/forge/agent"
+      },
+      {
+        "id": "polly",
+        "name": "polly",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/polly-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/polly/agent",
+        "sandbox": {
+          "mode": "off"
+        },
+        "model": {
+          "primary": "ollama-polly/qwen2.5:7b-instruct",
+          "fallbacks": [
+            "openai-codex/gpt-5.3-codex",
+            "ollama/gemma4:26b"
+          ]
+        },
+        "params": {
+          "polly": {
+            "localTimeoutSeconds": 3,
+            "mailmanTimeoutSeconds": 90,
+            "ackTimeoutSeconds": 60,
+            "fallbackSilent": true
+          }
+        }
+      },
+      {
+        "id": "maxwell",
+        "name": "maxwell",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/maxwell-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/maxwell/agent",
+        "sandbox": {
+          "mode": "off"
+        },
+        "tools": {
+          "allow": [
+            "exec",
+            "read",
+            "write"
+          ]
+        },
+        "params": {
+          "num_ctx": 32768
+        }
+      },
+      {
+        "id": "otto",
+        "name": "otto",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/otto-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/otto/agent",
+        "sandbox": {
+          "mode": "off"
+        }
+      },
+      {
+        "id": "finn",
+        "name": "finn",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/finn-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/finn/agent"
+      },
+      {
+        "id": "prof",
+        "name": "prof",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/prof-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/prof/agent"
+      },
+      {
+        "id": "weber",
+        "name": "weber",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/weber-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/weber/agent"
+      },
+      {
+        "id": "uhura",
+        "name": "uhura",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/uhura-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/uhura/agent"
+      },
+      {
+        "id": "emma",
+        "name": "emma",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/emma-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/emma/agent"
+      },
+      {
+        "id": "john",
+        "name": "john",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/john-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/john/agent"
+      },
+      {
+        "id": "balt",
+        "name": "balt",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/balt-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/balt/agent"
+      },
+      {
+        "id": "lex",
+        "name": "lex",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/lex-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/lex/agent"
+      },
+      {
+        "id": "spark",
+        "name": "spark",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/spark-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/spark/agent"
+      },
+      {
+        "id": "trip",
+        "name": "trip",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/trip-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/trip/agent"
+      },
+      {
+        "id": "rex",
+        "name": "rex",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/rex-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/rex/agent",
+        "sandbox": {
+          "mode": "off"
+        }
+      },
+      {
+        "id": "backer",
+        "name": "backer",
+        "workspace": "/Users/louishyman/.openclaw/workspaces/backer-workspace",
+        "agentDir": "/Users/louishyman/.openclaw/agents/backer/agent",
+        "sandbox": {
+          "mode": "off"
+        }
+      }
+    ]
+  },
+  "tools": {
+    "deny": [
+      "browser",
+      "web_fetch"
+    ]
+  },
+  "bindings": [
+    {
+      "type": "route",
+      "agentId": "worf",
+      "match": {
+        "channel": "telegram",
+        "accountId": "worf"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "polly",
+      "match": {
+        "channel": "telegram",
+        "accountId": "polly"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "maxwell",
+      "match": {
+        "channel": "telegram",
+        "accountId": "maxwell"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "otto",
+      "match": {
+        "channel": "telegram",
+        "accountId": "otto"
+      }
+    }
+  ],
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "approvals": {
+    "exec": {
+      "enabled": true,
+      "mode": "session"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "execApprovals": {
+        "enabled": true,
+        "approvers": [
+          "8162289158"
+        ]
+      },
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "allowFrom": [
+        "8162289158"
+      ],
+      "groupAllowFrom": [
+        "8162289158"
+      ],
+      "groupPolicy": "allowlist",
+      "streaming": {
+        "mode": "partial"
+      },
+      "accounts": {
+        "default": {
+          "enabled": false,
+          "dmPolicy": "pairing",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "worf": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8554184045:AAGs44VPZXoGXzj9ltvupF9ZC0eVEOsKFXI",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "polly": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8052266799:AAGUYLctYvtY7gdgPdQHLveU9lm2iHUsulk",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "maxwell": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8786305234:AAEMKhqliToFTad2Gb9E46TXDlbVcJ1DPO4",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "otto": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8546798177:AAEwdKNWFWSs4G5799ZqU_R0J2SUvjFiiIs",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        }
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "f462b8e539b4d12ab891a91cf2a4909c17d5f9e47ed43cf9"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "permissionMode": "approve-all",
+          "nonInteractivePermissions": "deny"
+        }
+      },
+      "openai": {
+        "enabled": true
+      }
+    },
+    "load": {
+      "paths": [
+        "/Users/louishyman/openclaw-ollama-kv-cache-plugin"
+      ]
+    }
+  },
+  "cron": {
+    "maxConcurrentRuns": 1,
+    "sessionRetention": "12h"
+  }
+}

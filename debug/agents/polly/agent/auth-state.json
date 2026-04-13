@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "lastGood": {
+    "openai-codex": "openai-codex:default",
+    "ollama-polly": "ollama-polly:local"
+  },
+  "usageStats": {
+    "openai-codex:default": {
+      "errorCount": 2,
+      "lastUsed": 1775951162876,
+      "lastFailureAt": 1776029390280,
+      "failureCounts": {
+        "rate_limit": 2
+      },
+      "cooldownUntil": 1776041751060,
+      "cooldownReason": "rate_limit",
+      "cooldownModel": "gpt-5.3-codex"
+    },
+    "ollama-polly:local": {
+      "errorCount": 0,
+      "lastUsed": 1776012698026
+    }
+  }
+}

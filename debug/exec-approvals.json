@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "socket": {
+    "path": "/Users/louishyman/.openclaw/exec-approvals.sock",
+    "token": "NTXMGAtmTWF060P9LSO_yms0Gs4dtJvE"
+  },
+  "defaults": {},
+  "agents": {}
+}

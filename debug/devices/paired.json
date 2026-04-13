@@ -1,0 +1,46 @@
+{
+  "2926521148f89a9d893770682702b4003e515d3c07a117666f7be6486a0b7025": {
+    "deviceId": "2926521148f89a9d893770682702b4003e515d3c07a117666f7be6486a0b7025",
+    "publicKey": "d68C6t6QfJxtdqXabUsAPlfMdw5Mi0KBBUyWoX_2nGs",
+    "platform": "darwin",
+    "clientId": "gateway-client",
+    "clientMode": "backend",
+    "role": "operator",
+    "roles": [
+      "operator"
+    ],
+    "scopes": [
+      "operator.read",
+      "operator.admin",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing",
+      "operator.talk.secrets"
+    ],
+    "approvedScopes": [
+      "operator.read",
+      "operator.admin",
+      "operator.write",
+      "operator.approvals",
+      "operator.pairing"
+    ],
+    "tokens": {
+      "operator": {
+        "token": "V0UKMGMuWsoQv5QXzTkmybwPZP-q8kibD4kQwmAvago",
+        "role": "operator",
+        "scopes": [
+          "operator.admin",
+          "operator.approvals",
+          "operator.pairing",
+          "operator.read",
+          "operator.write"
+        ],
+        "createdAtMs": 1775667602566,
+        "rotatedAtMs": 1775668075533
+      }
+    },
+    "createdAtMs": 1775667602566,
+    "approvedAtMs": 1775668075533,
+    "displayName": "agent"
+  }
+}
