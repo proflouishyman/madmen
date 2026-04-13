@@ -272,3 +272,19 @@ Created scripts/polly_ingest.py — a deterministic Python script that:
 Re-enabled ingestion-watch cron (renamed to ingestion-watch-20m), now running every 20 minutes on the light lane, calling polly_ingest.py directly. Timeout reduced from 420s to 120s since the script runs in ~2 seconds.
 Notes
 The morning digest should now find data in polly.db. Events, commitments, and drafts tables will populate as Otto writes structured sweep entries and agents create drafts. The stale-contact check (waiting_on) seeds 20 entries initially — these can be resolved by Polly or Louis.
+
+[2026-04-13] - ollama-light Provider Missing Auth in Agent Profiles
+Problem
+After adding the ollama-light provider, all agents using it (backer, rex, maxwell, otto, polly, and others) failed with "No API key found for provider ollama-light". The context window fix made the error visible — the first failure was context window, and once that was fixed, auth was the next blocker.
+Root Cause
+OpenClaw's custom provider auth model requires each agent to have an explicit entry in its own auth-profiles.json for any non-bundled provider. The regular `ollama` provider is bundled and needs no per-agent entry. The `ollama-polly` provider had a correct entry (type: api_key, key: ollama-local). The `ollama-light` provider was added to the global config but not to any agent's auth-profiles.json.
+Solution
+Patched all 18 agent auth-profiles.json files to add "ollama-light:local": { "type": "api_key", "provider": "ollama-light", "key": "ollama-local" }.
+
+[2026-04-13] - Backer Exec Allowlist Missing backer_health_tick.sh
+Problem
+Backer's health cron was denied with "exec denied: allowlist miss" when trying to run /Users/louishyman/openclaw/scripts/backer_health_tick.sh.
+Root Cause
+OpenClaw exec security="allowlist" mode checks the command against the agent's TOOLS.md allowed command list. The script path was never listed in backer's TOOLS.md.
+Solution
+Added the health script and polly_ingest.py to backer's TOOLS.md under "Health Scripts (exec-allowlisted)". Also added the light lane Ollama tools (port 11436 curl check) and launchctl restart commands for the light lane.
