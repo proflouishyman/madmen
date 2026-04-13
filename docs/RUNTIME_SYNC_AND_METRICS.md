@@ -18,6 +18,9 @@ What it collects:
 - security audit (`--deep`)
 - Otto suite (`--quick`)
 - timed agent latency checks (`polly`, `rex`, `maxwell`)
+  - hard process timeouts per probe to prevent collector hangs
+  - `timed_out` boolean in `agent-latency.json`
+  - timeout-path bytes decoding guard for Python 3.14 `TimeoutExpired`
 
 Outputs:
 
@@ -25,6 +28,18 @@ Outputs:
 - machine summary: `summary.json`
 - human summary: `summary.md`
 - symlink: `runtime_metrics/latest`
+
+Latest validated snapshot:
+
+- `runtime_metrics/20260410T072040Z`
+- Latency: `polly 20.843s`, `rex 46.4s`, `maxwell 46.089s`
+
+Maxwell backfill execution mode:
+
+- Cron `gmail-backfill-12m-20m` now runs deterministic exec tick script:
+  - `/Users/louishyman/openclaw/scripts/maxwell_backfill_tick.py`
+- Compact checkpoint path:
+  - `/Users/louishyman/.openclaw/workspaces/maxwell-workspace/memory/gmail-backfill-12m-checkpoint.json`
 
 ## 2) Runtime snapshot sync (GitHub-safe default)
 
@@ -61,3 +76,78 @@ This additionally copies:
 - Keep repository private.
 - Commit scripts/docs and redacted snapshots.
 - Avoid committing raw secrets, OAuth files, bot tokens, and full sensitive memory dumps.
+
+## 3) Runtime stale-state reconciler
+
+Script:
+
+`/Users/louishyman/openclaw/scripts/reconcile_runtime_state.py`
+
+Purpose:
+
+- reconcile stale `running` task rows as `lost`
+- immediately reconcile impossible rows where `status=running` but terminal markers already exist (`ended_at` / `terminal_outcome`)
+- clear stale per-agent session-store `status=running` markers
+- remove orphaned `*.jsonl.lock` files
+- mark duplicate concurrent `running` cron rows for the same `source_id` as `lost` (keep newest)
+- mark superseded `running` cron rows as `lost` when a newer terminal run already exists for the same `source_id`
+
+Operational integration:
+
+- startup wrapper runs reconciler before boot:
+  - `/Users/louishyman/openclaw/scripts/start_openclaw_gateway_with_kv_checks.sh`
+- Backer health tick runs reconciler every cycle and reports:
+  - `stale_tasks_marked`
+  - `stale_sessions_cleared`
+  - `stale_locks_detected`
+  - `stale_lock_heal_triggered`
+  - `polly_route_reset_applied`
+
+Polly route drift guard:
+
+- Backer health tick now clears stale Polly session `modelOverride` values when
+  OpenClaw auto-fallback pins Polly away from its configured fast lane.
+- This prevents persistent model drift for `agent:polly:main` after transient
+  fallback events.
+
+Backer cron lane guard:
+
+- `scripts/apply_polly_resilience_addendum.sh` now pins `backer-health-5m` to
+  `BACKER_HEALTH_MODEL_KEY` (default `ollama/gemma4:26b`) on both create and
+  edit paths.
+- This prevents stale cron model overrides from leaving Backer health on
+  `ollama-polly/*`, which must remain Polly-only.
+
+Validation:
+
+- `python3 -m unittest /Users/louishyman/openclaw/scripts/test_reconcile_runtime_state.py -v`
+
+Known limitation:
+
+- Under heavy model failover pressure, OpenClaw can still emit inconsistent
+  task lifecycle rows (for example `status=running` with terminal markers).
+  The reconciler is an operational safeguard that clears these rows; it does
+  not replace an upstream runtime fix.
+
+## 4) Ollama static-prompt cache benchmark
+
+Script:
+
+`/Users/louishyman/openclaw/scripts/benchmark_ollama_soul_cache.py`
+
+Purpose:
+
+- benchmark repeated turns for a fixed SOUL-heavy prompt on one session
+- compare cold vs warm latency after enabling Ollama cache controls
+- report `p50` / `p95` and timeout rate
+
+Usage:
+
+```bash
+python3 /Users/louishyman/openclaw/scripts/benchmark_ollama_soul_cache.py \
+  --agent polly \
+  --session-id ollama-kv-bench \
+  --warmup 1 \
+  --turns 8 \
+  --message "Summarize yesterday's top 3 priorities in 3 bullets."
+```

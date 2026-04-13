@@ -63,3 +63,33 @@ Log files reviewed:
 3. Keep ACP direct-dispatch fallback as default while ACPX failures persist.
 4. Remove Docker-sandbox dependency from critical cron paths unless daemon uptime is guaranteed.
 5. Resolve `operator.read` scope mismatch for full deep-probe observability.
+
+---
+
+## Addendum (2026-04-10 Runtime Stabilization)
+
+Newly confirmed root causes and fixes:
+
+1. Rex cron self-recursion:
+- Rex cron turns were calling `cron.run` on their own job id, returning `already-running` instead of executing backfill.
+- Fixed by restricting tools to `exec,read,write` and forcing deterministic `rex_sync_contacts.py` execution with 365d checkpoint.
+
+2. Maxwell cron subagent flow lockups:
+- Long-lived subagent flows remained active and repeatedly timed out.
+- Stale run records in `~/.openclaw/subagents/runs.json` were reconciled, gateway restarted, and Maxwell cron switched to in-session deterministic sweep behavior (no subagent spawn).
+
+3. Metrics collector hangs:
+- `scripts/collect_openclaw_metrics.sh` now applies hard subprocess timeouts and emits `timed_out` flags.
+
+4. Maxwell 12m backfill drift and large-state prompt pressure:
+- Historical Maxwell backfill cron was disabled and state readbacks were using a large legacy JSON.
+- Added deterministic exec tick script (`scripts/maxwell_backfill_tick.py`) with compact checkpoint state and re-enabled `gmail-backfill-12m-20m` every 20 minutes.
+- Verified checkpoint progression and healthy cron status (`ok`) after re-enable.
+
+5. Collector timeout path bug on Python 3.14:
+- Timeout exceptions returned bytes in `stdout`/`stderr`, which broke summary generation.
+- Added safe bytes-to-text normalization in the timeout handler.
+
+Post-fix validation snapshot:
+- `runtime_metrics/20260410T072040Z`
+- Agent latency probe success: `polly 20.843s`, `rex 46.4s`, `maxwell 46.089s`

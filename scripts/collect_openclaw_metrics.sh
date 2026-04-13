@@ -32,25 +32,44 @@ import json
 import subprocess
 import time
 
+def to_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
 tests = [
-    ("polly", ["openclaw", "agent", "--agent", "polly", "--timeout", "60",
-               "--message", "Return one line: HEARTBEAT_OK with current ingest mode."]),
-    ("rex", ["openclaw", "agent", "--agent", "rex", "--timeout", "90",
-             "--message", "Return compact status from state/connections-sync-last.json: account, pages_read, messages_scanned, unique_senders, inserted, updated, total_connections, cycle_complete."]),
-    ("maxwell", ["openclaw", "agent", "--agent", "maxwell", "--timeout", "90",
-                 "--message", "Return compact status from memory/gmail-backfill-12m-state.json: pages_processed, complete, next_page_token, account, query. Do not run new sweep."]),
+    ("polly", 90, ["openclaw", "agent", "--agent", "polly", "--timeout", "60",
+                   "--message", "Return one line: HEARTBEAT_OK with current ingest mode."]),
+    ("rex", 120, ["openclaw", "agent", "--agent", "rex", "--timeout", "90",
+                  "--message", "Return compact status from state/connections-sync-last.json: account, pages_read, messages_scanned, unique_senders, inserted, updated, total_connections, cycle_complete."]),
+    ("maxwell", 120, ["openclaw", "agent", "--agent", "maxwell", "--timeout", "90",
+                      "--message", "Return compact status from memory/gmail-backfill-12m-checkpoint.json: pages_processed, complete, next_page_token, account, query. Do not run new sweep."]),
 ]
 
 results = []
-for agent, cmd in tests:
+for agent, hard_timeout_seconds, cmd in tests:
     start = time.time()
-    cp = subprocess.run(cmd, capture_output=True, text=True)
+    timed_out = False
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=hard_timeout_seconds)
+        return_code = cp.returncode
+        out = (cp.stdout or "") + (cp.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        return_code = 124
+        out = (
+            to_text(exc.stdout)
+            + to_text(exc.stderr)
+            + "\n[collector-timeout] hard timeout exceeded"
+        ).strip()
     latency = round(time.time() - start, 3)
-    out = (cp.stdout or "") + (cp.stderr or "")
     results.append(
         {
             "agent": agent,
-            "return_code": cp.returncode,
+            "return_code": return_code,
+            "timed_out": timed_out,
             "latency_seconds": latency,
             "output_excerpt": out.strip()[:1200],
         }

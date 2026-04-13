@@ -87,3 +87,113 @@ Solution
 Retuned cron payloads to compact deterministic prompts, reduced thinking level to `low`, tightened timeouts where appropriate, changed Otto sweep logging to an absolute workspace path, and reset Rex delivery to `none`. Verified with manual cron runs: Polly `ok` in ~39s, Otto `ok` in ~56s, and active cron board returned to `ok` across enabled jobs.
 Notes
 Post-fix metrics snapshot (`runtime_metrics/20260409T190110Z`) shows improved latency (`polly 6.251s`, `rex 6.24s`, `maxwell 17.038s`) with `security critical=0`.
+
+[2026-04-10] - Rex Backfill Cron Recurred Into Itself
+Problem
+`rex-backfill-365d-20m` repeatedly reported "already running" and did not advance work during cron-triggered runs.
+Root Cause
+The Rex cron turn had broad tool access and called the `cron` tool on its own job id (`cron.run` recursion), which returned `reason=already-running` and short-circuited real ingestion work.
+Solution
+Edited Rex cron to enforce deterministic execution: restricted tools to `exec,read,write`, switched to an explicit `python3 rex_sync_contacts.py` command with the dedicated `rex_sync_checkpoint_365d.json`, and required raw stdout JSON return. Also restored schedule to every 20 minutes.
+Notes
+After the fix, Rex cron returned real JSON stats (`pages_read/messages_scanned/total_connections/next_page_token`) and resumed checkpoint progression.
+
+[2026-04-10] - Maxwell Cron Timeout Loop From Subagent TaskFlow Drift
+Problem
+`gmail-sweep-5m` accumulated timeouts and stale running TaskFlows, causing repeated cron instability and queue contention.
+Root Cause
+Maxwell cron used spawn-style subagent execution; stale subagent run records remained active in `~/.openclaw/subagents/runs.json`, reviving running TaskFlows even after process loss/restarts.
+Solution
+Cleaned stale task/subagent state (with backups), marked orphaned subagent runs terminal in `runs.json`, restarted gateway, and hardened Maxwell cron to run in-session only with restricted tools (`exec,read,write`), `thinking=off`, and a deterministic read-only sweep prompt that writes directly to Maxwell memory artifacts.
+Notes
+Post-fix Maxwell cron returned to `ok` with `consecutiveErrors=0` and a successful latest duration (`~82.9s`) under Ollama primary routing.
+
+[2026-04-10] - Metrics Collector Could Stall On Hanging Agent Probes
+Problem
+`scripts/collect_openclaw_metrics.sh` could run indefinitely when an agent CLI call hung, preventing reproducible metrics collection.
+Root Cause
+The Python latency probe used `subprocess.run(...)` without a hard process timeout, so tool hangs could block the script forever.
+Solution
+Added explicit per-agent hard timeouts to latency probes, surfaced `timed_out` in output JSON, and kept structured excerpts for timeout diagnostics.
+Notes
+With runtime stabilized, a fresh metrics snapshot (`runtime_metrics/20260410T065202Z`) completed successfully with non-timeout latencies (`polly 25.124s`, `rex 43.745s`, `maxwell 48.543s`).
+
+[2026-04-10] - Maxwell 12-Month Backfill Was Disabled And Context-Heavy
+Problem
+Historical Maxwell ingestion over the past year was no longer advancing because the `gmail-backfill-12m-20m` cron had been disabled, and status prompts were reading a very large state file.
+Root Cause
+During earlier stabilization work, the backfill cron remained disabled. The backfill state format also accumulated full message listings, which made readback prompts expensive and increased timeout risk under Ollama.
+Solution
+Added deterministic script `scripts/maxwell_backfill_tick.py` that performs one quota-aware Gmail page tick via `gog -j`, persists compact checkpoint state, writes per-run summaries, and applies exponential backoff markers. Reconfigured and enabled cron `292d2a4f-fd28-4b06-bd94-29283a902753` to run this script with `toolsAllow=exec,read,write`, `thinking=off`, `lightContext=true`, and `timeoutSeconds=300`.
+Notes
+Checkpoint now advances again (`gmail-backfill-12m-checkpoint.json`), and cron status returned to `ok` without large-prompt parsing.
+
+[2026-04-10] - Metrics Collector Timeout Handler Failed On Python 3.14 Bytes
+Problem
+Metrics collection failed after an agent timeout with `TypeError: can only concatenate str (not "bytes") to str`.
+Root Cause
+`subprocess.TimeoutExpired` payloads (`stdout`/`stderr`) can be bytes in this runtime, but the collector timeout path assumed strings.
+Solution
+Updated `scripts/collect_openclaw_metrics.sh` with a `to_text` helper to safely decode bytes before building the timeout excerpt.
+Notes
+Post-fix metrics run succeeded: `runtime_metrics/20260410T071325Z`.
+
+[2026-04-11] - Runtime Reconciler Missed Impossible Running Task Rows
+Problem
+OpenClaw task rows were observed in an impossible state (`status=running` while `endedAt` and terminal `error` were already set), which left CLI calls hanging and kept stale run markers in runtime state.
+Root Cause
+The reconciler only selected stale runs by age (`last_event_at` cutoff) and did not treat terminal-marked `running` rows as immediately invalid.
+Solution
+Updated `scripts/reconcile_runtime_state.py` to reconcile `running` rows immediately when `ended_at` or `terminal_outcome` exists, regardless of grace window. Added regression tests in `scripts/test_reconcile_runtime_state.py` to prove immediate cleanup for this edge case and preserve normal recent-running behavior.
+Notes
+This is a mitigation for upstream task lifecycle inconsistency; OpenClaw can still emit inconsistent timestamp rows under heavy failover churn, but stale queue blockage is now auto-cleared.
+
+[2026-04-11] - Ollama Shadow Wrapper Param Handling Too Narrow
+Problem
+Ollama shadow-provider controls were brittle when provider/param shapes varied, reducing reliability of cache-control injection across custom Ollama provider aliases.
+Root Cause
+Wrapper logic matched only `provider.id === "ollama"` and expected params strictly under `params.ollama`, so alternative provider ids and flattened param forms were ignored.
+Solution
+Expanded shadow wrapper matching to any provider with `api="ollama"` and added flattened-param support for cache and reliability parsing in `plugins/ollama/lib/cache-controls.js`. Added unit coverage in `plugins/ollama/test/cache-controls.test.mjs` for flattened inputs and custom-provider patching.
+Notes
+Reliability controls still depend on OpenClaw’s stream wrapper compatibility path; this change improves coverage without changing upstream OpenClaw contracts.
+
+[2026-04-11] - Reconciler Missed Superseded Cron Running Rows And Lock-Heal Telemetry
+Problem
+Cron/task state could remain stuck with a `running` row even after newer runs for the same cron job had already ended, and Polly lane lock incidents needed explicit runtime healing visibility.
+Root Cause
+`scripts/reconcile_runtime_state.py` only reconciled duplicate concurrent `running` cron rows; it did not reconcile older `running` rows that were superseded by newer terminal runs (`succeeded/failed/timed_out/lost`). Backer health output also did not expose stale-lock detection/heal state.
+Solution
+Updated `scripts/reconcile_runtime_state.py` to mark stale `running` cron rows as `lost` when a newer terminal run exists for the same `source_id`, and added deterministic tests in `scripts/test_reconcile_runtime_state.py` for both duplicate-running and superseded-running cron scenarios. Extended `scripts/backer_health_tick.sh` with stale lock detection, gateway restart healing for stale OpenClaw lock holders, and telemetry fields (`stale_locks_detected`, `stale_lock_heal_triggered`).
+Notes
+This is an operational safeguard for upstream scheduler/runtime drift; it prevents stale bookkeeping from persisting and gives explicit lock-heal observability in Backer logs.
+
+[2026-04-11] - Otto Cron Test Broke On JSON Warning Preamble
+Problem
+`scripts/test_otto_suite.sh --quick` reported `FAIL: Otto cron coverage - Could not parse cron JSON` even when cron jobs existed.
+Root Cause
+`openclaw cron list --json` can emit config warning lines before the JSON body. The suite attempted to parse full stdout directly as JSON and failed.
+Solution
+Updated `scripts/test_otto_suite.sh` to strip non-JSON preamble content and parse from the first `{` before counting Otto cron jobs.
+Notes
+After the fix, `Otto cron coverage` passes reliably while preserving strict JSON parsing of the payload body.
+
+[2026-04-11] - Polly Session Model Drift Caused Slow/Unreliable Replies
+Problem
+Polly intermittently stopped responding promptly and routed direct turns through slower fallback paths, including lock contention cascades after retries.
+Root Cause
+OpenClaw persisted an `auto` session-level model override on `agent:polly:main` (`modelOverride=gemma4:26b`), pinning Polly away from the configured fast lane. When retries overlapped, a stale running task could hold the session lock and block new turns.
+Solution
+Added a guard to `scripts/backer_health_tick.sh` that detects and clears drifted Polly `auto` model overrides from `~/.openclaw/agents/polly/sessions/sessions.json` so Polly returns to configured routing. Added health telemetry field `polly_route_reset_applied` to confirm automatic correction in logs.
+Notes
+A one-time runtime cleanup was also applied: stale Polly running task reconciled as `lost`, stale session lock healed via gateway restart, and Backer auth profiles were synced with `ollama-polly:local` marker to prevent repeated auth fallback noise.
+
+[2026-04-11] - Backer Health Cron Persisted On Polly Lane
+Problem
+`backer-health-5m` repeatedly stuck in `running`, reported `already-running`, and starved cron recovery while Maxwell ingestion freshness regressed.
+Root Cause
+The cron job retained a stale `model` override (`ollama-polly/qwen2.5:7b-instruct`) from prior config state. `openclaw cron edit` does not clear model overrides unless a new model is explicitly set, so Backer continued competing on Polly's dedicated lane and inherited Polly-timeout/fallback churn.
+Solution
+Updated `scripts/apply_polly_resilience_addendum.sh` to set Backer health model explicitly (`BACKER_HEALTH_MODEL_KEY`, default `ollama/gemma4:26b`) on both cron create and edit paths, ensuring the job never persists on Polly's dedicated provider lane.
+Notes
+This preserves the addendum invariant: Polly lane is reserved for Polly direct-response reliability; infrastructure health automation runs on the regular local Ollama lane.
