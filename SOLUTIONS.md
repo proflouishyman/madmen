@@ -1,3 +1,13 @@
+[2026-04-13] - Otto outlook-sweep Cron Looping and Hallucinating Paths
+Problem
+otto-outlook-sweep cron was running for 33+ minutes on each cycle. It used gemma4:26b on a 900s timeout, and the open-ended message told Otto to write AppleScript inline. Otto repeatedly tried to write scripts to hallucinated paths (/Users/lou_hi_syman/) and encountered AppleScript syntax errors in a loop.
+Root Cause
+Open-ended cron prompts that ask an LLM to generate and run code are fragile. The LLM invents filenames and paths, makes AppleScript syntax errors, and retries indefinitely. The same mistake as the original ingestion-watch cron.
+Solution
+Created scripts/otto_outlook_sweep.sh — a deterministic bash+AppleScript script that sweeps 10 most recent Outlook messages from last 48h, classifies by subject keywords, and appends structured YAML to sweep-log.yaml. Changed cron message to just exec the script (same pattern as backer-health-5m). Switched model to ollama-light/qwen2.5:7b, timeout to 120s. Updated ingest_otto_sweep() in polly_ingest.py to parse the new structured YAML format (messages: blocks with subject/sender/received/class fields) instead of the old single-line format.
+Notes
+The otto-workspace TOOLS.md and sandbox TOOLS.md both list the new script. Both message classes URGENT and PRIORITY create escalations in polly.db.
+
 [2026-04-13] - polly_ingest agent_health Idempotency Bug
 Problem
 polly_ingest.py total_new counted 5 new items on every run because agent_health rows were processed as new even when they were upserts of existing rows.

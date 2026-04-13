@@ -128,53 +128,104 @@ def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
 # ── Otto Sweep → escalations ──────────────────────────────────────────────────
 
 def ingest_otto_sweep(conn: sqlite3.Connection, dry_run: bool) -> int:
-    """Read Otto's sweep-log.yaml and populate escalations for URGENT/PRIORITY items."""
+    """Read Otto's sweep-log.yaml and populate escalations for URGENT/PRIORITY items.
+
+    Supports the structured format written by otto_outlook_sweep.sh:
+        messages:
+        - subject: 'Re: Urgent thing'
+          sender: '...'
+          received: '...'
+          class: URGENT
+    """
     if not OTTO_SWEEP.exists():
         log.warning("Otto sweep log not found: %s", OTTO_SWEEP)
         return 0
 
     content = OTTO_SWEEP.read_text().strip()
-    if not content or content.startswith("#") and len(content.splitlines()) <= 1:
+    non_comment = [l for l in content.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if not non_comment:
         log.info("Otto sweep log is empty, skipping")
         return 0
 
-    # Simple YAML line parser — each line is "- YYYY-MM-DD HH:MM: CLASSIFICATION: subject"
     count = 0
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+
+    # ── Structured format (otto_outlook_sweep.sh) ────────────────────────────
+    # Parse message blocks: look for "- subject:" entries followed by "  class: X"
+    current: dict = {}
+    in_messages = False
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line.startswith("#") or not line:
             continue
-
-        # Try to parse structured sweep entries
-        line_clean = line.lstrip("- ").strip()
-        parts = line_clean.split(":", 2)
-        if len(parts) < 3:
+        if line == "messages:":
+            in_messages = True
             continue
+        if not in_messages:
+            continue
+        # New message entry
+        if line.startswith("- subject:"):
+            if current:
+                count += _maybe_insert_otto_escalation(conn, current, dry_run)
+            current = {"subject": _yaml_val(line)}
+        elif line.startswith("sender:") and current:
+            current["sender"] = _yaml_val(line)
+        elif line.startswith("received:") and current:
+            current["received"] = _yaml_val(line)
+        elif line.startswith("class:") and current:
+            current["class"] = _yaml_val(line).upper()
+        elif line.startswith("sweep_run:") or line.startswith("- timestamp:"):
+            # New sweep_run block — flush current message and reset
+            if current:
+                count += _maybe_insert_otto_escalation(conn, current, dry_run)
+                current = {}
+            in_messages = False
 
-        # Expected: "timestamp: CLASSIFICATION: description"
-        classification = parts[1].strip().upper()
-        description = parts[2].strip()
-
-        if classification in ("URGENT", "PRIORITY"):
-            esc_id = stable_id("otto-sweep", line_clean[:80])
-            existing = conn.execute(
-                "SELECT id FROM escalations WHERE id = ?", (esc_id,)
-            ).fetchone()
-            if not existing:
-                esc_type = "urgent_outlook" if classification == "URGENT" else "priority_outlook"
-                if not dry_run:
-                    conn.execute(
-                        """INSERT INTO escalations
-                           (id, from_agent, type, summary, source_object, status)
-                           VALUES (?, 'otto', ?, ?, 'outlook', 'pending')""",
-                        (esc_id, esc_type, description),
-                    )
-                count += 1
-                log.info("Escalation (Otto): %s — %s", esc_id[:8], description[:60])
+    # Flush last message
+    if current:
+        count += _maybe_insert_otto_escalation(conn, current, dry_run)
 
     if not dry_run:
         conn.commit()
     return count
+
+
+def _yaml_val(line: str) -> str:
+    """Extract value from a 'key: value' YAML line, stripping quotes."""
+    parts = line.split(":", 1)
+    val = parts[1].strip() if len(parts) > 1 else ""
+    return val.strip("'\"")
+
+
+def _maybe_insert_otto_escalation(
+    conn: sqlite3.Connection, msg: dict, dry_run: bool
+) -> int:
+    """Insert an escalation for URGENT/PRIORITY Outlook messages. Returns 1 if inserted."""
+    cls = msg.get("class", "ROUTINE")
+    if cls not in ("URGENT", "PRIORITY"):
+        return 0
+    subject = msg.get("subject", "(no subject)")
+    sender  = msg.get("sender", "unknown")
+    esc_id  = stable_id("otto-sweep", f"{subject}:{sender}")
+    existing = conn.execute("SELECT id FROM escalations WHERE id = ?", (esc_id,)).fetchone()
+    if existing:
+        return 0
+    esc_type = "urgent_outlook" if cls == "URGENT" else "priority_outlook"
+    # Strip redundant leading classification prefix if subject already starts with it
+    display_subject = subject
+    for prefix in ("URGENT:", "PRIORITY:", "URGENT -", "PRIORITY -"):
+        if subject.upper().startswith(prefix):
+            display_subject = subject[len(prefix):].strip()
+            break
+    summary  = f"{cls}: {display_subject} (from {sender})"
+    if not dry_run:
+        conn.execute(
+            """INSERT INTO escalations
+               (id, from_agent, type, summary, source_object, status)
+               VALUES (?, 'otto', ?, ?, 'outlook', 'pending')""",
+            (esc_id, esc_type, summary),
+        )
+    log.info("Escalation (Otto %s): %s", cls, subject[:60])
+    return 1
 
 
 # ── Cron Health → agent_health ─────────────────────────────────────────────────
