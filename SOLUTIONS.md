@@ -1,3 +1,21 @@
+[2026-04-13] - Agent Exec Parameter Bugs: elevated, sandbox host, missing ask:off
+Problem
+Multiple agents (backer, rex, otto) had exec calls failing due to wrong parameters: backer added elevated:true spontaneously causing "elevated is not available" errors; rex omitted ask:off causing approval-gateway rejections; otto used host:sandbox causing immediate "exec host=sandbox requires sandbox runtime" errors.
+Root Cause
+TOOLS.md files for rex and otto had no exec parameter guidance at all — the model chose defaults freely. Backer's TOOLS.md only said "use ask:off" but the model saw Ollama restart commands in SOUL.md and inferred that health scripts needed elevated privileges. Otto's model defaulted to host:sandbox (a safe-sandbox default behavior) rather than host:gateway.
+Solution
+Added "Exec Rules — READ FIRST" sections at the top of backer, rex, and otto TOOLS.md files with explicit: ALWAYS use ask:"off", NEVER use elevated:true, NEVER use security:"allowlist", NEVER use host:"sandbox" (otto only). Synced all sandbox TOOLS.md copies.
+Notes
+With global approvals.exec.mode:"off" set, exec calls technically don't need ask:"off" to bypass approval — but adding it explicitly ensures the model generates the right call regardless. The elevated permission (tools.elevated.enabled) is intentionally disabled system-wide; no agent should ever use it.
+
+[2026-04-13] - Otto Draft-Check Cron: Broken AppleScript Syntax
+Problem
+otto-draft-check cron generated AppleScript using "account list 1" which doesn't exist in Outlook's AppleScript API, causing error -1728 every 6pm run.
+Root Cause
+Open-ended LLM prompt "Check Outlook Drafts folder via AppleScript" with no template. The qwen2.5:7b model invented a plausible but incorrect API reference.
+Solution
+Converted to deterministic exec pattern: "Execute exactly this command once via exec... osascript -e 'tell application "Microsoft Outlook" to count (messages of drafts folder of default account)'". Set model to ollama-light/qwen2.5:7b, timeoutSeconds:30. Added correct Drafts template to otto TOOLS.md.
+
 [2026-04-13] - Polly Sitrep Fabrication: qwen2.5:7b Ignores SOUL.md Exec Instructions
 Problem
 Polly continued to hallucinate fake calendar events ("Meeting with Client 9am", "Team Check-In", "Lunch Break") and fabricated agent statuses ("Otto: Currently active and working on coding tasks") on every Sitrep request, even after SOUL.md was updated with explicit sqlite3 exec instructions.
