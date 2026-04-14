@@ -80,6 +80,43 @@ def _is_commercial_thread(from_field: str, labels: list, subject: str) -> bool:
     return False
 
 
+def _sanitize_json_control_chars(text: str) -> str:
+    """Replace bare ASCII control characters (0x00–0x1F) inside JSON string literals
+    with a space, leaving structural JSON characters (\", \\, comma, braces) intact.
+
+    Maxwell occasionally writes email subjects with literal newlines or other control
+    chars directly in JSON string values (RFC 7159 §7 forbids this). This function
+    walks the text character-by-character tracking whether we are inside a string,
+    and replaces any bare control char found in a string with a space.
+
+    Characters replaced: 0x00-0x08, 0x0A (\n), 0x0B, 0x0C, 0x0D (\r), 0x0E-0x1F.
+    Characters left alone: 0x09 (\t) — also technically invalid bare in JSON strings,
+    but replaced to space here too for safety.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            result.append(ch)
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ord(ch) < 0x20:
+            # Bare control character inside a string — replace with space
+            result.append(' ')
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def stable_id(*parts: str) -> str:
     """Generate a deterministic ID from input parts to prevent duplicate rows."""
     raw = "|".join(str(p) for p in parts)
@@ -174,7 +211,17 @@ def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
         return 0
 
     try:
-        data = json.loads(GMAIL_INTAKE.read_text())
+        raw = GMAIL_INTAKE.read_text(encoding="utf-8", errors="replace")
+        # Maxwell occasionally writes subject lines with literal unescaped control characters
+        # (bare newlines, tabs, etc.) inside JSON string values, producing
+        # "Invalid \escape" or "Invalid control character" parse errors.
+        # Sanitize: replace bare control chars (0x00-0x1F) with safe substitutes.
+        # We do this character-by-character only inside string tokens to avoid
+        # corrupting JSON structure characters. The simplest safe approach:
+        # replace all bare control chars with a space — they only appear in
+        # string values like subject lines where a space is an acceptable substitute.
+        raw = _sanitize_json_control_chars(raw)
+        data = json.loads(raw)
     except (json.JSONDecodeError, OSError) as exc:
         log.error("Failed to read Gmail intake: %s", exc)
         return 0
@@ -362,7 +409,9 @@ def ingest_agent_health(conn: sqlite3.Connection, dry_run: bool) -> int:
         log.error("Failed to read cron jobs: %s", exc)
         return 0
 
-    # Aggregate per-agent: latest success, latest error, total items
+    # Aggregate per-agent: latest success, and most-recent-run status.
+    # Rule: last_status reflects the MOST RECENT cron run for that agent (by timestamp).
+    # A single old error job must not override a newer successful job.
     agent_stats: dict[str, dict] = {}
     for job in cron_data.get("jobs", []):
         agent_id = job.get("agentId", "unknown")
@@ -378,6 +427,7 @@ def ingest_agent_health(conn: sqlite3.Connection, dry_run: bool) -> int:
                 "last_status": "unknown",
                 "last_error": None,
                 "items_processed": 0,
+                "_latest_run_ms": None,  # track most recent run timestamp across all jobs
             }
 
         stats = agent_stats[agent_id]
@@ -385,13 +435,18 @@ def ingest_agent_health(conn: sqlite3.Connection, dry_run: bool) -> int:
 
         if last_run_ms:
             run_dt = datetime.fromtimestamp(last_run_ms / 1000, tz=timezone.utc).isoformat()
+            # Track most recent success time (for SLA reporting)
             if status == "ok":
                 if not stats["last_success_at"] or run_dt > stats["last_success_at"]:
                     stats["last_success_at"] = run_dt
-                    stats["last_status"] = "ok"
-            elif status == "error":
-                stats["last_status"] = "error"
-                stats["last_error"] = error or f"Duration: {duration_ms}ms"
+            # Update overall agent status only if this is the most recent run seen so far
+            if stats["_latest_run_ms"] is None or last_run_ms > stats["_latest_run_ms"]:
+                stats["_latest_run_ms"] = last_run_ms
+                stats["last_status"] = status
+                if status == "error":
+                    stats["last_error"] = error or f"Duration: {duration_ms}ms"
+                else:
+                    stats["last_error"] = None  # clear stale error on newer ok run
 
     count = 0
     now = datetime.now(timezone.utc).isoformat()

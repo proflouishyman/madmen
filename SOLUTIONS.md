@@ -1,3 +1,43 @@
+[2026-04-14] - Cron Exec Allowlist Denial: Otto and Rex Cron Jobs Failing With security=allowlist
+Problem
+otto-outlook-sweep, otto-calendar-6am, rex-contacts-sync-6h, rex-backfill-365d-20m, gmail-backfill-12m-20m, ingestion-watch-20m, maxwell-gcal-6am, and gmail-sweep-5m cron jobs were producing "exec denied: Cron runs cannot wait for interactive exec approval. Effective host exec policy: security=allowlist ask=on-miss" errors. Otto would then report "the elevated permissions required to execute this script are not currently available" and return without running the script.
+Root Cause
+The cron job payload messages for these 8 jobs said "Execute exactly this command once via exec (do not call cron tools)" but gave no guidance on which exec parameters to use. The qwen2.5:7b model defaulted to generating security:"allowlist" + ask:"on-miss" which is forbidden in cron context (cron sessions have no interactive approval channel). By contrast, the two working cron jobs (backer-health-5m, maxwell-ingest-30m) explicitly said 'with ask:"off" ONLY (do not use elevated, security:allowlist, or any other exec parameters)'.
+Solution
+Updated all 8 affected jobs in ~/.openclaw/cron/jobs.json to include the explicit ask:"off" guidance phrase in their payload messages. Pattern matched the backer-health-5m wording: 'Execute exactly this command once via exec with ask:"off" ONLY (do not use elevated, security:allowlist, or any other exec parameters). Do not call cron tools. Return ONLY the command stdout...'
+Notes
+The global approvals.exec.mode:"off" setting technically makes ask:"off" redundant — but the explicit prohibition on security:allowlist is what matters here. The model needs to see the exact words "do not use security:allowlist" to avoid generating those parameters. Gateway restart not required — jobs.json is read at schedule time.
+
+[2026-04-14] - polly agent_health Showing "error" Status Due to Stale Job Aggregation
+Problem
+polly_ingest.py was reporting polly, otto, and other agents as "error" in agent_health even when their most recent cron run succeeded. The morning digest showed agent health errors that did not reflect reality.
+Root Cause
+The ingest_agent_health() aggregation loop used "any error wins" logic: if ANY job for an agent had ever been in error state (regardless of timestamp), it set last_status="error" unconditionally, overwriting any later ok status. A single old failed job permanently tainted the agent's health row.
+Solution
+Rewrote the aggregation to track the most-recent run by timestamp. Added _latest_run_ms tracking field per agent. last_status now reflects only the MOST RECENT cron run for that agent across all its jobs. If a newer run is ok, last_error is also cleared (no stale error messages from past failures).
+Notes
+The fix is purely in the aggregation logic — no DB schema change. Existing stale error rows will self-correct on the next polly_ingest run.
+
+[2026-04-14] - Maxwell Malformed JSON: Bare Newlines in Subject Fields Cause polly_ingest Parse Failure
+Problem
+polly_ingest.py intermittently failed with "Failed to read Gmail intake: Invalid \\escape" or "Invalid control character at line N column M". The errors prevented the entire gmail-intake-latest.json from being processed.
+Root Cause
+Maxwell's gmail-sweep-5m cron job (running qwen2.5:7b via gog tool) occasionally writes email subject lines containing literal unescaped control characters (bare \n, \r) directly into JSON string values. RFC 7159 §7 forbids bare control characters in JSON strings — they must be escaped as \\n, \\r etc. The standard json.loads() parser rejects these as malformed.
+Solution
+Added _sanitize_json_control_chars(text) function to polly_ingest.py. The function walks the JSON text character-by-character tracking string context, and replaces any bare control character (0x00–0x1F) found inside a string literal with a space. Structural characters outside strings (braces, commas, whitespace between keys) are preserved. The sanitizer is applied to the raw file text before json.loads() in ingest_gmail_intake(). Tested against 4 cases: bare \n in string, structural \n between keys, escaped \\n sequence inside string, bare \r in string.
+Notes
+This is a defensive fix in the reader. The root cause is Maxwell's model generating malformed JSON — a separate improvement would be to make maxwell_ingest.py validate/sanitize the JSON it writes to gmail-intake-latest.json before saving. For now the reader is robust.
+
+[2026-04-14] - ollama-light Context Window Warning: qwen2.5:7b Declared at 16384 Instead of 32768
+Problem
+gateway.err.log was logging "[agent/embedded] low context window: ollama-light/qwen2.5:7b ctx=16384 (warn<32000)" continuously on every cron run using ollama-light. No functional failure but noisy log and potential risk of context truncation on larger prompts.
+Root Cause
+openclaw.json had contextWindow: 16384 for qwen2.5:7b under the ollama-light provider, while the same model under the main ollama provider was correctly set to 32768. Likely a copy-paste error when the ollama-light provider was added.
+Solution
+Updated openclaw.json: ollama-light/qwen2.5:7b contextWindow 16384→32768. Also fixed ollama/qwen3-coder:30b which had the same 16384 misconfiguration. Gateway restart required to reload config.
+Notes
+The actual Ollama server context size (num_ctx) is set by Ollama's modelfile/runtime, not this value. This field is used by the gateway to warn about undersized context windows. Setting it accurately silences the spurious warning.
+
 [2026-04-14] - Commercial Email Noise: Retailers Polluting contact_signals and email_threads
 Problem
 contact_signals and email_threads were filling up with commercial/marketing senders (Tesla, Uber, Grubhub, Blinds.com, Roland Park Swimming Pool, etc.) because maxwell_ingest.py indexed every email thread regardless of whether it was a real person-to-person exchange. The morning digest showed these as high-frequency "contacts." The interview system surfaced them as Louis's top relationships.
