@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.openclaw.maxwell-ingest.plist
+  Runs maxwell_ingest.py directly every 30 minutes via launchd.
+
+  This replaces the maxwell-ingest-30m OpenClaw cron job (which routed the
+  same script invocation through an LLM agent turn). Running directly via
+  launchd eliminates: LLM inference overhead, event loop contention in the
+  gateway, exec-parameter generation risk, and session lock pile-up.
+
+  The 30-minute interval is deliberately offset from polly-ingest (20m) to
+  reduce simultaneous polly.db write contention. They will still overlap at
+  the 60-minute LCM mark, but the script_lock.py mechanism handles that by
+  having the second arrival skip cleanly rather than hang.
+
+  Install:
+    cp ~/openclaw/launchd/com.openclaw.maxwell-ingest.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openclaw.maxwell-ingest.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.openclaw.maxwell-ingest
+    rm ~/Library/LaunchAgents/com.openclaw.maxwell-ingest.plist
+
+  Logs:
+    stdout → ~/.openclaw/workspaces/backer-workspace/logs/maxwell-ingest.log
+    stderr → ~/.openclaw/workspaces/backer-workspace/logs/maxwell-ingest.err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.openclaw.maxwell-ingest</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/louishyman/openclaw/scripts/maxwell_ingest.py</string>
+    <string>--verbose</string>
+  </array>
+
+  <!-- Run every 30 minutes (1800 seconds) -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!-- Do not launch at load time — wait for the first interval -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Restart if the script exits non-zero -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Throttle restarts: wait at least 30s before retrying a crashed run -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/louishyman/.openclaw/workspaces/backer-workspace/logs/maxwell-ingest.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/louishyman/.openclaw/workspaces/backer-workspace/logs/maxwell-ingest.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENCLAW_HOME</key>
+    <string>/Users/louishyman/.openclaw</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- Reduce I/O priority — this is a background pipeline job -->
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

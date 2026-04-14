@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.openclaw.polly-ingest.plist
+  Runs polly_ingest.py directly every 20 minutes via launchd.
+
+  This replaces the ingestion-watch-20m OpenClaw cron job (which routed the
+  same script invocation through an LLM agent turn). Running directly via
+  launchd eliminates: LLM inference overhead, event loop contention in the
+  gateway, exec-parameter generation risk, and session lock pile-up.
+
+  Install:
+    cp ~/openclaw/launchd/com.openclaw.polly-ingest.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openclaw.polly-ingest.plist
+
+  Uninstall:
+    launchctl bootout gui/$(id -u)/com.openclaw.polly-ingest
+    rm ~/Library/LaunchAgents/com.openclaw.polly-ingest.plist
+
+  Logs:
+    stdout → ~/.openclaw/workspaces/backer-workspace/logs/polly-ingest.log
+    stderr → ~/.openclaw/workspaces/backer-workspace/logs/polly-ingest.err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.openclaw.polly-ingest</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/louishyman/openclaw/scripts/polly_ingest.py</string>
+    <string>--verbose</string>
+  </array>
+
+  <!-- Run every 20 minutes (1200 seconds) -->
+  <key>StartInterval</key>
+  <integer>1200</integer>
+
+  <!-- Do not launch at load time — wait for the first interval -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Restart if the script exits non-zero -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Throttle restarts: wait at least 30s before retrying a crashed run -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/louishyman/.openclaw/workspaces/backer-workspace/logs/polly-ingest.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/louishyman/.openclaw/workspaces/backer-workspace/logs/polly-ingest.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENCLAW_HOME</key>
+    <string>/Users/louishyman/.openclaw</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- Reduce I/O priority — this is a background pipeline job -->
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

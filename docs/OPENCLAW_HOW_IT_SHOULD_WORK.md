@@ -133,12 +133,13 @@ This will cause the model to either hallucinate output or use wrong exec params.
 - **Telegram responses**: reads Live Status block from SOUL.md, no tool calls needed for status
 - **Morning digest** (`polly-morning-digest`, 7am, gemma4:26b): queries polly.db via exec, reads maxwell/otto intake files, sends Telegram digest
 - **Pre-digest health check** (`polly-pre-digest-healthcheck`, 6:50am, qwen2.5:7b): runs gateway health checks via exec; should use deterministic message
-- **Ingestion watch** (`ingestion-watch-20m`, every 20m, qwen2.5:7b): deterministic exec of `polly_ingest.py` → updates Live Status in SOUL.md
+- **Ingestion watch** (`ingestion-watch-20m`): **DISABLED** — replaced by `com.openclaw.polly-ingest` launchd agent (see §22)
 
 ### Maxwell — Gmail intake
 - **gmail-sweep-5m** (every 30m, gemma4:26b): reads Gmail via `gog` tool, writes `gmail-intake-latest.json`
 - **gmail-backfill-12m-20m** (every 20m, qwen2.5:7b): deterministic exec of backfill script
 - **maxwell-gcal-6am** (daily 6:05am, qwen2.5:7b): deterministic exec of gcal tick script
+- **maxwell-ingest-30m**: **DISABLED** — replaced by `com.openclaw.maxwell-ingest` launchd agent (see §22)
 
 ### Otto — Outlook + Slack intake
 - **otto-outlook-sweep** (hourly 8am-6pm weekdays, qwen2.5:7b): deterministic exec of `otto_outlook_sweep.sh`
@@ -503,3 +504,41 @@ Before fixing any issue, ask:
 4. **Is the data fabricated?** → The model isn't calling tools. Pre-embed the data (sitrep cache pattern) or make the cron message deterministic.
 
 **Always verify**: after a fix, check the next cron run's `lastRunStatus` in `jobs.json` and the session transcript to confirm the tool was actually called with the right parameters.
+
+---
+
+## 22. Direct Launchd Ingest Agents (Replacing LLM-Mediated Cron)
+
+**Problem solved**: `ingestion-watch-20m` and `maxwell-ingest-30m` ran `polly_ingest.py` and `maxwell_ingest.py` by asking an LLM agent to "execute this command via exec." This added unnecessary fragility:
+- The model had to generate correct exec parameters (`ask:"off"`, no `security:allowlist`) on every run
+- Each invocation created an isolated session, locked a `.jsonl` file, and consumed a gateway event loop slot for ~10-15s
+- A slow Ollama inference or Telegram stall during one of these cycles blocked all other pending callbacks
+- Session lock accumulation cascaded into the 459s–955s backer hangs seen in production logs
+
+**Fix**: Both scripts now run as native launchd background agents that invoke Python directly, with zero LLM involvement.
+
+| Agent | Label | Interval | Script | Log |
+|-------|-------|----------|--------|-----|
+| Polly ingest | `com.openclaw.polly-ingest` | every 20m | `polly_ingest.py --verbose` | `backer-workspace/logs/polly-ingest.log` |
+| Maxwell ingest | `com.openclaw.maxwell-ingest` | every 30m | `maxwell_ingest.py --verbose` | `backer-workspace/logs/maxwell-ingest.log` |
+
+**Plist files**: `~/openclaw/launchd/`
+
+**Install** (one-time, run on Mac terminal):
+```bash
+bash ~/openclaw/scripts/install_ingest_launchd.sh
+```
+
+**Check status**:
+```bash
+bash ~/openclaw/scripts/install_ingest_launchd.sh --status
+```
+
+**Uninstall** (reverts to OpenClaw cron jobs — re-enable them in jobs.json manually):
+```bash
+bash ~/openclaw/scripts/install_ingest_launchd.sh --uninstall
+```
+
+**Rule**: Never add LLM agent turns to the ingest pipeline. Data pipeline work (file I/O, SQLite writes) must run as direct scripts via launchd or cron. LLM agent turns are only appropriate for work that requires reasoning — digests, relationship queries, Slack summarization, ACP delegation.
+
+**Overlap protection**: Both scripts use `script_lock.py` (fcntl-based) so if a slow run is still in progress when the next interval fires, the new invocation exits immediately with `{"status":"skipped"}` rather than queueing and hanging. `backer_health_tick.sh` clears any stale lock files from crashes within the next 5-minute health cycle.
