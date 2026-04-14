@@ -67,6 +67,26 @@ _NONDIRECT_GMAIL_LABELS = {
     "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS",
     "CATEGORY_UPDATES",
 }
+# Gmail labels that are definitively commercial/marketing — never index these
+_COMMERCIAL_GMAIL_LABELS = {"CATEGORY_PROMOTIONS"}
+
+# Subject/body patterns that signal commercial email (opt-out / unsubscribe / tracking)
+_COMMERCIAL_SUBJECT_PATTERNS = [
+    re.compile(r'\bunsubscribe\b', re.I),
+    re.compile(r'\bopt.?out\b', re.I),
+    re.compile(r'\bopt.?in\b', re.I),
+    re.compile(r'\bsale\b.{0,30}\b(ends|today|now|off)\b', re.I),
+    re.compile(r'\b\d+%\s*off\b', re.I),
+    re.compile(r'\b(promo|coupon|deal|offer|discount|savings|clearance)\b', re.I),
+    re.compile(r'\b(free shipping|limited time|act now|exclusive offer)\b', re.I),
+]
+# Commercial sender domain fragments (retail, marketing platforms)
+_COMMERCIAL_DOMAIN_FRAGMENTS = {
+    "mailchimp.com", "sendgrid.net", "klaviyo.com", "constantcontact.com",
+    "campaignmonitor.com", "exacttarget.com", "sailthru.com", "braze.com",
+    "responsys.net", "marketo.com", "hubspot.com", "pardot.com",
+    "mg.substack.com",  # Substack marketing (not newsletter)
+}
 
 # ── Deadline / reply keywords ──────────────────────────────────────────────────
 _DEADLINE_PATTERNS = [
@@ -140,6 +160,31 @@ def is_direct_sender(from_email: str, from_name: str,
         return False
     # Treat as direct
     return True
+
+
+def is_commercial(from_email: str, labels: list[str] | None,
+                  subject: str = "") -> bool:
+    """Return True if this email is definitively commercial/marketing.
+
+    Commercial emails should NOT be indexed into email_threads or contact_signals.
+    They pollute relationship intelligence with retailer and bulk-sender noise.
+
+    Detection signals (any one is sufficient):
+      1. Gmail CATEGORY_PROMOTIONS label — the most reliable signal
+      2. Known marketing platform domain (e.g. klaviyo.com, sendgrid.net)
+      3. Subject line contains opt-out / unsubscribe / sale / discount language
+    """
+    # 1. Gmail's own promotions category
+    if labels and any(l in _COMMERCIAL_GMAIL_LABELS for l in labels):
+        return True
+    # 2. Marketing platform domain
+    domain = from_email.split("@")[1].lower() if "@" in from_email else ""
+    if any(frag in domain for frag in _COMMERCIAL_DOMAIN_FRAGMENTS):
+        return True
+    # 3. Subject-line commercial signals
+    if subject and any(p.search(subject) for p in _COMMERCIAL_SUBJECT_PATTERNS):
+        return True
+    return False
 
 
 def extract_reply_needed(subject: str, body: str | None,
@@ -279,6 +324,16 @@ def ingest_gmail(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
         received_raw = thread.get("received_at", thread.get("date", now_utc()))
 
         from_name, from_email = parse_from(from_raw)
+
+        # Skip commercial/marketing emails entirely — do not index into polly.db.
+        # This keeps contact_signals and email_threads free of retailer noise.
+        # Gmail's CATEGORY_PROMOTIONS label is the primary signal; subject-line
+        # patterns (sale, unsubscribe, % off) catch what Gmail misses.
+        if is_commercial(from_email, labels, subject):
+            log.debug("Skipping commercial thread %s | %s | %s",
+                      thread_id[:8], from_email, subject[:50])
+            continue
+
         is_direct = is_direct_sender(from_email, from_name, labels)
 
         # Fetch body for direct emails (rate-limited per run)
@@ -396,6 +451,13 @@ def ingest_otto(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
         received_raw = msg.get("received", now_utc())
 
         from_name, from_email = parse_from(from_raw)
+
+        # Skip commercial/marketing emails — Otto sweep has no Gmail labels,
+        # so we rely on domain patterns and subject-line signals only.
+        if is_commercial(from_email, None, subject):
+            log.debug("Skipping commercial Outlook thread | %s | %s", from_email, subject[:50])
+            continue
+
         is_direct = is_direct_sender(from_email, from_name)
 
         # No body fetch for Outlook (no gog equivalent)

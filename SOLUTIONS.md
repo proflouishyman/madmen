@@ -1,3 +1,13 @@
+[2026-04-14] - Commercial Email Noise: Retailers Polluting contact_signals and email_threads
+Problem
+contact_signals and email_threads were filling up with commercial/marketing senders (Tesla, Uber, Grubhub, Blinds.com, Roland Park Swimming Pool, etc.) because maxwell_ingest.py indexed every email thread regardless of whether it was a real person-to-person exchange. The morning digest showed these as high-frequency "contacts." The interview system surfaced them as Louis's top relationships.
+Root Cause
+maxwell_ingest.py already had is_direct_sender() which correctly identifies non-direct email, but non-direct threads were still indexed — is_direct=0 was stored but the row was still inserted. polly_ingest.py (the older escalation-creation layer) had no commercial filter at all.
+Solution
+Added is_commercial() function to maxwell_ingest.py and _is_commercial_thread() to polly_ingest.py. Both check three signals in priority order: (1) Gmail CATEGORY_PROMOTIONS label — most reliable; (2) known marketing platform domain (mailchimp.com, sendgrid.net, klaviyo.com, etc.); (3) subject-line pattern match (unsubscribe, % off, sale, promo, coupon, etc.). Any one signal is sufficient to skip. Commercial threads are skipped entirely — no email_threads row, no contact_signals entry, no escalation, no task. Filter applied in both Gmail and Outlook (Otto) ingestion paths.
+Notes
+Correctly kept: Amazon transactional (order delivery), Substack subscriber notifications, MIT Press, IRS notices, community orgs (Roland Park Swimming Pool is kept — they're a real org, not a commercial mailer). False-positive risk is low because the subject-line pattern only fires on explicit opt-out/sale/discount language, not on any CATEGORY_UPDATES email. The filter is not applied retroactively — existing commercial rows in polly.db remain until the DB is pruned or rebuilt.
+
 [2026-04-14] - Polly Rex Contact Lookup: ACP Fabrication + Deterministic Script Fix
 Problem
 When Louis asked Polly to "ask Rex about [person]", Polly wrote fake ACP command strings inline and invented plausible-looking JSON responses with fabricated email addresses (john.doe@example.com, fake@org.edu). The contacts and relationship data were entirely hallucinated.

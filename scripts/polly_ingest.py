@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -36,6 +37,47 @@ CONNECTIONS_DB = WORKSPACES / "rex-workspace" / "connections.db"
 CRON_JOBS = OPENCLAW_HOME / "cron" / "jobs.json"
 
 log = logging.getLogger("polly-ingest")
+
+# ── Commercial email filter ────────────────────────────────────────────────────
+# Emails matching these signals are skipped entirely — not indexed, no escalations,
+# no tasks, no contact_signals entries. Keeps polly.db free of retailer/marketing noise.
+
+_COMMERCIAL_LABELS = {"CATEGORY_PROMOTIONS"}
+_COMMERCIAL_SUBJECT_RE = re.compile(
+    r'\b(unsubscribe|opt[\s-]?out|opt[\s-]?in|sale\b|% off|\boff\b.{0,20}\bsale\b'
+    r'|promo|coupon|deal|discount|savings|clearance|free shipping'
+    r'|limited time|act now|exclusive offer)\b',
+    re.I,
+)
+_COMMERCIAL_DOMAIN_FRAGMENTS = {
+    "mailchimp.com", "sendgrid.net", "klaviyo.com", "constantcontact.com",
+    "campaignmonitor.com", "exacttarget.com", "braze.com", "marketo.com",
+    "mg.substack.com",  # Substack marketing (not the newsletter platform itself)
+}
+
+
+def _is_commercial_thread(from_field: str, labels: list, subject: str) -> bool:
+    """Return True if this email is commercial/marketing and should be skipped.
+
+    Checks (any one is sufficient):
+      1. Gmail CATEGORY_PROMOTIONS label
+      2. Known marketing platform domain
+      3. Subject-line opt-out / sale / discount language
+    """
+    # 1. Gmail's own promotions category (most reliable)
+    if any(l in _COMMERCIAL_LABELS for l in labels):
+        return True
+    # 2. Known marketing platform domain
+    domain = ""
+    m = re.search(r'@([\w.-]+)', from_field)
+    if m:
+        domain = m.group(1).lower()
+    if any(frag in domain for frag in _COMMERCIAL_DOMAIN_FRAGMENTS):
+        return True
+    # 3. Subject-line commercial language
+    if subject and _COMMERCIAL_SUBJECT_RE.search(subject):
+        return True
+    return False
 
 
 def stable_id(*parts: str) -> str:
@@ -148,6 +190,14 @@ def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
         subject = thread.get("subject", "(no subject)")
         sender = thread.get("from", "unknown")
         date_str = thread.get("date", "")
+        labels = thread.get("labels", [])
+
+        # Skip commercial/promotional emails — don't create escalations or tasks
+        # from marketing mail. CATEGORY_PROMOTIONS is the primary Gmail signal;
+        # subject-line patterns (unsubscribe, % off, promo) catch the rest.
+        if _is_commercial_thread(sender, labels, subject):
+            log.debug("Skipping commercial thread %s: %s", thread_id[:8], subject[:50])
+            continue
 
         if classification == "urgent":
             # Create an escalation for urgent emails
