@@ -438,3 +438,13 @@ Rex updated to query both databases:
 Polly delegates relationship queries to Rex via ACP rather than querying email tables directly.
 Notes
 Body fetch requires gog with gmail.readonly scope. If gog is unavailable, maxwell_ingest.py falls back gracefully (snippet-only). Gmail labels (CATEGORY_PERSONAL etc.) are the most reliable direct/list classifier — they come from Gmail's own ML, not regex. contact_signals table provides per-sender aggregates (total threads, reply count, last contact) for Rex to surface in relationship briefs without scanning all threads.
+
+[2026-04-13] - Wire Uhura, Prof, Trip Telegram Bots into OpenClaw Gateway
+Problem
+Uhura, Prof, and Trip agents had no Telegram bots — they were only reachable via ACP delegation, not direct message.
+Root Cause
+No Telegram bots had been created for these agents.
+Solution
+Created three bots via BotFather: @Uhura_314_bot, @Prof_314_bot, @Trip_314_bot. Added route bindings (channel:telegram, accountId → agentId) and account entries under channels.telegram.accounts for all three, with the same access pattern as other bots: dmPolicy:pairing, allowFrom/groupAllowFrom restricted to Louis's user ID (8162289158), groupPolicy:allowlist, streaming:partial.
+Notes
+Gateway restart required. Total Telegram-connected agents now: polly, maxwell, otto, worf, rex, uhura, prof, trip (8 of 17).

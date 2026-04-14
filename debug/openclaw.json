@@ -338,6 +338,30 @@
         "channel": "telegram",
         "accountId": "rex"
       }
+    },
+    {
+      "type": "route",
+      "agentId": "uhura",
+      "match": {
+        "channel": "telegram",
+        "accountId": "uhura"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "prof",
+      "match": {
+        "channel": "telegram",
+        "accountId": "prof"
+      }
+    },
+    {
+      "type": "route",
+      "agentId": "trip",
+      "match": {
+        "channel": "telegram",
+        "accountId": "trip"
+      }
     }
   ],
   "commands": {
@@ -448,6 +472,51 @@
           "enabled": true,
           "dmPolicy": "pairing",
           "botToken": "8724877218:AAHEcX4PWacr5D7HcyGO3EYd19TuwYWHdyk",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "uhura": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8621361221:AAHbTjBBI6KSkFidrVW6B7JziVXrApuo21Q",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "prof": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8688704158:AAEhCCGk9oB9nqHhYJ3Pr95E5zibr8tIpsw",
+          "allowFrom": [
+            "8162289158"
+          ],
+          "groupAllowFrom": [
+            "8162289158"
+          ],
+          "groupPolicy": "allowlist",
+          "streaming": {
+            "mode": "partial"
+          }
+        },
+        "trip": {
+          "enabled": true,
+          "dmPolicy": "pairing",
+          "botToken": "8217099240:AAH_njib5X35f3TTU-ERuuwkOQXWDeyHdT4",
           "allowFrom": [
             "8162289158"
           ],
