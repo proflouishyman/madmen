@@ -6,12 +6,40 @@ This document describes the intended architecture of OpenClaw and the correct pa
 
 ---
 
+## 0. Governing Principle: Use the Right Layer
+
+**The single most important rule in this system:**
+
+> LLM agent turns are for reasoning. Deterministic work runs outside the gateway.
+
+Every time work is routed through an agent turn unnecessarily, you inherit the full cost of LLM inference: model loading latency, exec-parameter generation risk, event loop contention, session lock accumulation, and timeout/retry failure modes. None of that is acceptable for work that doesn't require judgment.
+
+**The test**: before adding or keeping a cron job as an `agentTurn`, ask:
+
+1. Does this work require the model to *reason* about something — synthesize, judge, prioritize, compose?
+   → Agent turn is appropriate.
+
+2. Does this work execute a fixed script, write a file, run a SQL query, or call a known API with no decisions?
+   → Use launchd directly. The agent should not be involved.
+
+**The two layers:**
+
+| Layer | What it's for | Examples |
+|-------|--------------|---------|
+| **launchd / cron** | Deterministic pipeline work — always the same script, always the same args | `polly_ingest.py`, `maxwell_ingest.py`, `backer_health_tick.sh`, `rex_sync_contacts.py` |
+| **OpenClaw agent turns** | Reasoning work — judgment, synthesis, ACP delegation, Telegram responses | Morning digest assembly, Gmail sweep + classification, Slack summarization, relationship queries |
+
+**Why this was violated historically**: OpenClaw's cron system is convenient — one config file, automatic retry, session isolation. It's tempting to use it for everything. But the gateway is a single-threaded async event loop. Blocking it with mechanical script execution during every 20-minute cycle creates contention that starves all reasoning work. The ingest scripts (`polly_ingest.py`, `maxwell_ingest.py`) were originally added as agent turns because the cron mechanism was already there, and the failure modes only became visible at production load.
+
+---
+
 ## 1. Architecture Overview
 
-OpenClaw is a multi-agent orchestration framework running locally on macOS. It has three execution contexts:
+OpenClaw is a multi-agent orchestration framework running locally on macOS. It has **four** execution contexts:
 
-- **Telegram turns** — user sends a message to an agent; the agent responds in real time.
-- **Cron jobs** — the OpenClaw scheduler fires a message to an agent on a schedule, in an isolated session.
+- **launchd agents** — deterministic scripts (file I/O, SQLite writes, shell tasks) run directly by macOS, no gateway involvement. These are the correct layer for data pipeline work.
+- **Telegram turns** — user sends a message to an agent; the agent responds in real time using LLM reasoning.
+- **Cron jobs** — the OpenClaw scheduler fires a message to an agent on a schedule, in an isolated session. Use only for work that requires reasoning.
 - **ACP delegation** — one agent sends a structured message to another agent (e.g. Polly delegates to Maxwell).
 
 Each agent has a workspace directory under `~/.openclaw/workspaces/<agent>-workspace/` containing:
@@ -92,14 +120,29 @@ The qwen2.5:7b model generates a plausible-sounding status update from its train
 **Fix**: `polly_ingest.py` now calls `write_sitrep_cache()` at the end of every 20-minute ingest run. This function queries polly.db and writes the results directly into the `<!-- LIVE_STATUS_START --> ... <!-- LIVE_STATUS_END -->` block at the bottom of `SOUL.md`. When Polly responds to "Sitrep," the live data is already in her system context — no tool call needed.
 
 **Correct behavior after fix**:
-1. `ingestion-watch-20m` cron runs → `polly_ingest.py --verbose` executes → `write_sitrep_cache()` updates SOUL.md with live db data.
+1. `com.openclaw.polly-ingest` launchd agent fires every 20 minutes → `polly_ingest.py --verbose` executes → `write_sitrep_cache()` updates SOUL.md with live db data.
 2. User sends "Sitrep" → Polly reads SOUL.md system context → Live Status block contains real data → Polly responds with accurate status.
 
 ---
 
-## 6. Cron Message Patterns
+## 6. When to Use OpenClaw Cron vs. launchd
 
-### ✅ Correct — deterministic (qwen2.5:7b safe)
+**First, ask whether the job belongs in the gateway at all** (see §0). If it executes a fixed script with no reasoning, it should be a launchd agent, not an OpenClaw cron job.
+
+For jobs that legitimately belong in the gateway (reasoning required), use the correct message pattern for the model tier:
+
+### ✅ Correct — reasoning task, descriptive message (gemma4:26b only)
+
+```
+Read CES Slack channels for the past 24 hours. Identify any threads needing
+Louis's input. Send 3-bullet summary to Polly via acp. Only escalate if
+something genuinely needs Louis — do not create noise.
+```
+
+### ✅ Correct — gateway cron for a script call, deterministic message (qwen2.5:7b)
+
+Used only when a script invocation genuinely must be coordinated through the agent
+(e.g., it needs to report results back via ACP, or depends on agent state). Rare.
 
 ```
 Execute exactly this command once via exec with ask:"off" ONLY
@@ -108,15 +151,16 @@ Do not call cron tools. Return ONLY the command stdout with no edits or commenta
 /path/to/script.sh
 ```
 
-### ✅ Correct — descriptive (gemma4:26b only)
+### ❌ Wrong — deterministic pipeline work routed through agent turn
 
 ```
-Read CES Slack channels for the past 24 hours. Identify any threads needing
-Louis's input. Send 3-bullet summary to Polly via acp. Only escalate if
-something genuinely needs Louis — do not create noise.
+# DO NOT do this for polly_ingest.py, maxwell_ingest.py, backer_health_tick.sh,
+# rex_sync_contacts.py, or any other script that runs the same way every time.
+# Use launchd instead.
+Execute exactly this command once via exec: python3 polly_ingest.py --verbose
 ```
 
-### ❌ Wrong — descriptive with qwen2.5:7b
+### ❌ Wrong — descriptive message to qwen2.5:7b
 
 ```
 Run daily infrastructure audit.
@@ -124,6 +168,16 @@ Run daily infrastructure audit.
 2. Checkpoint polly.db WAL: PRAGMA wal_checkpoint(TRUNCATE).
 ```
 This will cause the model to either hallucinate output or use wrong exec params.
+
+**Decision tree for new scheduled work:**
+
+```
+Does the work require LLM reasoning?
+  NO  → launchd plist (StartInterval or StartCalendarInterval)
+  YES → Does it need to run more than once per hour?
+          YES → Consider whether the frequency is appropriate for an agent turn
+          NO  → OpenClaw cron job with gemma4:26b (descriptive) or qwen2.5:7b (deterministic)
+```
 
 ---
 
@@ -142,20 +196,22 @@ This will cause the model to either hallucinate output or use wrong exec params.
 - **maxwell-ingest-30m**: **DISABLED** — replaced by `com.openclaw.maxwell-ingest` launchd agent (see §22)
 
 ### Otto — Outlook + Slack intake
-- **otto-outlook-sweep** (hourly 8am-6pm weekdays, qwen2.5:7b): deterministic exec of `otto_outlook_sweep.sh`
-- **otto-calendar-6am** (daily 6am, qwen2.5:7b): deterministic exec of `otto_calendar_tick.sh`
-- **otto-slack-digest** (9am weekdays, gemma4:26b): reads Slack via curl, sends to Polly via ACP
-- **otto-draft-check** (6pm weekdays, qwen2.5:7b): deterministic exec osascript counting Outlook drafts
-- **otto-outcome-sweep** (4:30pm Fridays, gemma4:26b): AppleScript search for reply tracking
+- **otto-outlook-sweep** (hourly 8am-6pm weekdays, qwen2.5:7b): deterministic exec of `otto_outlook_sweep.sh` — *candidate for launchd migration*
+- **otto-calendar-6am** (daily 6am, qwen2.5:7b): deterministic exec of `otto_calendar_tick.sh` — *candidate for launchd migration*
+- **otto-slack-digest** (9am weekdays, gemma4:26b): reads Slack via curl, summarizes, sends to Polly via ACP — **reasoning task; correct as agent turn**
+- **otto-draft-check** (6pm weekdays, qwen2.5:7b): deterministic exec osascript counting Outlook drafts — *candidate for launchd migration*
+- **otto-outcome-sweep** (4:30pm Fridays, gemma4:26b): AppleScript search + reply tracking judgment — **reasoning task; correct as agent turn**
 
 ### Rex — Contacts database
-- **rex-contacts-sync-6h** (every 6h, qwen2.5:7b): deterministic exec of `rex_sync_contacts.py`
-- **rex-backfill-365d-20m** (every 20m, qwen2.5:7b): deterministic exec of same script with 365-day range
+- **rex-contacts-sync-6h** (every 6h, qwen2.5:7b): deterministic exec of `rex_sync_contacts.py` — *candidate for launchd migration*
+- **rex-backfill-365d-20m** (every 20m, qwen2.5:7b): deterministic exec of same script — *candidate for launchd migration*
 
 ### Backer — Infrastructure health
-- **backer-health-5m** (every 5m, qwen2.5:7b): deterministic exec of `backer_health_tick.sh`
-- **backer-daily-audit** (2am, qwen2.5:7b): deterministic exec of sqlite3 integrity check + WAL checkpoint
-- **backer-nightly-backup** (2:40am, qwen2.5:7b): WAL checkpoint + runs `backer_backup_tick.sh` → dated backup copies of polly.db and runs.sqlite to `~/.openclaw/backups/`
+- **backer-health-5m** (every 5m, qwen2.5:7b): deterministic exec of `backer_health_tick.sh` — *candidate for launchd migration*
+- **backer-daily-audit** (2am, qwen2.5:7b): deterministic exec of sqlite3 integrity check + WAL checkpoint — *candidate for launchd migration*
+- **backer-nightly-backup** (2:40am, qwen2.5:7b): WAL checkpoint + runs `backer_backup_tick.sh` → dated backup copies of polly.db and runs.sqlite — *candidate for launchd migration*
+
+**Note on "candidates for launchd migration"**: These jobs are deterministic script invocations with no reasoning requirement. They follow the same anti-pattern that was fixed for `ingestion-watch-20m` and `maxwell-ingest-30m`. They are currently stable (the exec parameter problem is contained by explicit `ask:"off"` in their cron messages), but each one unnecessarily occupies an event loop slot. Migrating them to launchd is the correct long-term direction. Prioritize by run frequency: `backer-health-5m` (every 5m) has the highest contention cost and is the most valuable to migrate next.
 
 ### Forge — Coding operations
 - **On-demand only** (no cron)
@@ -194,7 +250,7 @@ Located at `~/.openclaw/workspaces/polly-workspace/polly.db`. WAL mode, concurre
 
 ### Email memory layer
 
-`email_threads`, `thread_items`, and `contact_signals` are populated by `maxwell_ingest.py` (runs every 30 minutes via `maxwell-ingest-30m` cron). These tables are the email signal layer for relationship intelligence.
+`email_threads`, `thread_items`, and `contact_signals` are populated by `maxwell_ingest.py` (runs every 30 minutes via the `com.openclaw.maxwell-ingest` launchd agent). These tables are the email signal layer for relationship intelligence.
 
 `is_direct` classification uses Gmail's `CATEGORY_PERSONAL` label (most reliable) + FROM address heuristics. Only direct threads get full body fetched (max 8 per run, 12s timeout, via `gog gmail messages search "thread:ID"`). Newsletters/lists get snippet only.
 
@@ -498,6 +554,7 @@ ollama-polly/qwen2.5:7b-instruct  →  openai-codex/gpt-5.3-codex  →  ollama/g
 
 Before fixing any issue, ask:
 
+0. **Should this work be in an agent turn at all?** → If it's a deterministic script invocation, move it to launchd (see §0 and §22). Patching exec parameters, adding `ask:"off"` to cron messages, or tuning timeouts are all symptoms of the wrong architectural choice.
 1. **Is this a model behavior problem?** → Fix the instruction surface (SOUL.md, TOOLS.md, cron message). Don't patch the script.
 2. **Is this a script/code problem?** → Fix the script. Don't paper over it with SOUL.md instructions.
 3. **Is this a parameter problem?** → Fix TOOLS.md Exec Rules AND the cron message payload. Both layers needed for qwen2.5:7b.
