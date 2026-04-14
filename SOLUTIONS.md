@@ -448,3 +448,23 @@ Solution
 Created three bots via BotFather: @Uhura_314_bot, @Prof_314_bot, @Trip_314_bot. Added route bindings (channel:telegram, accountId → agentId) and account entries under channels.telegram.accounts for all three, with the same access pattern as other bots: dmPolicy:pairing, allowFrom/groupAllowFrom restricted to Louis's user ID (8162289158), groupPolicy:allowlist, streaming:partial.
 Notes
 Gateway restart required. Total Telegram-connected agents now: polly, maxwell, otto, worf, rex, uhura, prof, trip (8 of 17).
+
+[2026-04-13] - runs.sqlite Corruption on Forced Gateway Kill
+Problem
+Gateway reported `cron: failed to create task ledger record` with `ERR_SQLITE_ERROR: database disk image is malformed` on startup. All cron jobs failed to track run state. Polly responded with "No API provider registered for api: ollama" due to cascading failures from the broken task registry.
+Root Cause
+Repeated forced SIGTERM during gateway restarts killed the process mid-write to ~/.openclaw/tasks/runs.sqlite. SQLite WAL journal was left in an inconsistent state, corrupting the main file. OpenClaw auto-creates .bak-runtime-reconcile-* backups but does not restore them automatically.
+Solution
+Restored runs.sqlite from the most recent clean backup (runs.sqlite.bak-runtime-reconcile-20260413T192012). Verified integrity with PRAGMA integrity_check before restarting gateway.
+Notes
+Restore procedure: stop gateway → cp ~/.openclaw/tasks/runs.sqlite.bak-runtime-reconcile-<latest> ~/.openclaw/tasks/runs.sqlite → restart. OpenClaw creates these backups automatically on runtime reconcile. The live file can be checked at any time: sqlite3 ~/.openclaw/tasks/runs.sqlite "PRAGMA integrity_check;"
+
+[2026-04-13] - polly.db Had No Backup Strategy
+Problem
+polly.db (escalations, tasks, events, email_threads, agent_health, etc.) had no file-level backups. WAL checkpoints were running but these only merge WAL into the main file — they do not create restorable copies. A corruption event would mean total data loss.
+Root Cause
+No backup script existed. backer_health_tick.sh only ran integrity checks and WAL checkpoints; backer-nightly-backup cron only ran PRAGMA wal_checkpoint(TRUNCATE).
+Solution
+Created scripts/backer_backup_tick.sh: uses sqlite3 .backup API (safe while live) to write dated copies of polly.db and runs.sqlite to ~/.openclaw/backups/. Retains 7 days of polly.db backups and 3 days of runs.sqlite backups. Updated backer-nightly-backup cron to run the script after WAL checkpoint.
+Notes
+Restore procedure for polly.db: cp ~/.openclaw/backups/polly.db.YYYY-MM-DD ~/.openclaw/workspaces/polly-workspace/polly.db then restart gateway. sqlite3 .backup is safe for live databases — it uses the SQLite backup API which handles concurrent writes correctly.
