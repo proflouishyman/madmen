@@ -37,6 +37,33 @@ python3 "${SCRIPT_DIR}/reconcile_runtime_state.py" \
   --grace-seconds 0 \
   --include-cron-running >/dev/null || true
 
+# Function purpose: Remove orphaned session lock files left by dead processes.
+# These cause "session file locked" errors that cascade into total model failure.
+python3 - "${HOME}/.openclaw" <<'LOCKPY'
+import glob, json, os, pathlib, sys
+openclaw_home = pathlib.Path(sys.argv[1]).expanduser()
+cleaned = 0
+for lock_path in glob.glob(str(openclaw_home / "agents" / "*" / "sessions" / "*.jsonl.lock")):
+    try:
+        data = json.loads(pathlib.Path(lock_path).read_text())
+        pid = int(data.get("pid", 0) or 0)
+    except Exception:
+        pid = 0
+    # If pid is 0, or the process is dead, the lock is orphaned
+    alive = False
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except (ProcessLookupError, PermissionError):
+            alive = False
+    if not alive:
+        os.remove(lock_path)
+        cleaned += 1
+if cleaned:
+    print(f"[kv-startup] cleaned {cleaned} orphaned session lock(s)")
+LOCKPY
+
 # Function purpose: Idempotently enforce startup config for the shadow Ollama plugin.
 python3 - \
   "${CONFIG_PATH}" \

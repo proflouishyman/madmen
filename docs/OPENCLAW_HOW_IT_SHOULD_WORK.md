@@ -402,6 +402,19 @@ sqlite3 ~/.openclaw/workspaces/polly-workspace/polly.db "PRAGMA integrity_check;
 
 ## 17. Gateway Restart: Safe vs Force
 
+**Preferred method** — use the safe restart script, which handles all edge cases:
+```bash
+# ✅ RECOMMENDED — pre-flight checks, stale lock cleanup, Ollama lane health, config enforcement
+bash ~/openclaw/scripts/openclaw_safe_restart.sh
+
+# Dry-run diagnostics (reports issues without restarting)
+bash ~/openclaw/scripts/openclaw_safe_restart.sh --check
+
+# Force mode (SIGKILL stuck processes if SIGTERM fails)
+bash ~/openclaw/scripts/openclaw_safe_restart.sh --force
+```
+
+**Manual method** (if the script is unavailable):
 ```bash
 # ✅ SAFE — sends SIGTERM, gateway flushes SQLite writes and exits cleanly
 launchctl stop  gui/$(id -u)/ai.openclaw.gateway
@@ -411,7 +424,9 @@ launchctl start gui/$(id -u)/ai.openclaw.gateway
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
-Use safe restart for all config changes. Use force only when the gateway is completely stuck and unresponsive. If you force-kill and the gateway fails to start next time, check `gateway.err.log` and `runs.sqlite` integrity.
+**What the safe restart script checks**: runs.sqlite integrity (auto-restores from backup if corrupt), orphaned session lock files (removes them), Ollama lane health on all 3 ports (restarts dead lanes via launchd), stuck gateway process (escalates from SIGTERM to SIGKILL with --force), runtime state reconciliation (clears stale running markers), and config enforcement (shadow plugin, model params, timeouts).
+
+Use the manual safe restart for simple config changes. Use `openclaw_safe_restart.sh --force` when the gateway is stuck. Never use `launchctl kickstart -k` directly — it bypasses all pre-flight safety checks.
 
 ---
 
