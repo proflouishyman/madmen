@@ -21,8 +21,11 @@ import logging
 import re
 import sqlite3
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from script_lock import AlreadyRunning, script_lock
 from typing import Any
 
 log = logging.getLogger("maxwell_ingest")
@@ -731,4 +734,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        with script_lock("maxwell-ingest"):
+            main()
+    except AlreadyRunning as exc:
+        # Another maxwell-ingest instance is already running. Skip this
+        # invocation entirely rather than queuing up or hanging on SQLite.
+        print(json.dumps({"status": "skipped", "reason": str(exc)}), flush=True)
+        sys.exit(0)

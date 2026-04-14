@@ -227,6 +227,58 @@ print(json.dumps({"count": len(matches), "locks": matches}))
 PY
 }
 
+clear_stale_script_locks() {
+  # Detect and remove /tmp/openclaw/*.lock files whose recorded PID is no
+  # longer alive. These are written by polly_ingest.py, maxwell_ingest.py,
+  # etc. via script_lock.py. A PID-dead lock means the process crashed
+  # without cleanup; remove it so the next cron invocation is not skipped.
+  python3 - "${STALE_AGE_SECONDS:-600}" <<'PY'
+import fcntl
+import glob
+import json
+import os
+import sys
+import time
+
+max_age = int(sys.argv[1]) if len(sys.argv) > 1 else 600
+lock_dir = "/tmp/openclaw"
+now = time.time()
+cleared = []
+errors = []
+
+if not os.path.isdir(lock_dir):
+    print(json.dumps({"cleared": 0, "files": [], "errors": []}))
+    raise SystemExit(0)
+
+for lock_path in glob.glob(os.path.join(lock_dir, "*.lock")):
+    try:
+        with open(lock_path, "r", encoding="utf-8", errors="replace") as f:
+            try:
+                # Non-blocking attempt: if we can get an exclusive lock the
+                # file is not held and must be stale — clear it.
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # We got the lock — the original holder is gone.
+                fcntl.flock(f, fcntl.LOCK_UN)
+                raw = f.read().strip()
+                pid = 0
+                if raw:
+                    try:
+                        pid = int(json.loads(raw).get("pid", 0) or 0)
+                    except Exception:
+                        pass
+                age = max(0, now - os.path.getmtime(lock_path))
+                os.unlink(lock_path)
+                cleared.append({"file": lock_path, "pid": pid, "age_seconds": int(age)})
+            except BlockingIOError:
+                # Lock is actively held — leave it alone.
+                pass
+    except OSError as exc:
+        errors.append({"file": lock_path, "error": str(exc)})
+
+print(json.dumps({"cleared": len(cleared), "files": cleared, "errors": errors}))
+PY
+}
+
 append_log() {
   local line="$1"
   local log_file="${LOG_DIR}/$(date +%Y-%m-%d).log"
@@ -245,6 +297,7 @@ stale_sessions_cleared=0
 stale_locks_detected=0
 stale_lock_heal_triggered=false
 polly_route_reset_applied=false
+stale_script_locks_cleared=0
 
 if route_reset_json="$(normalize_polly_session_model_override 2>/dev/null)"; then
   polly_route_reset_applied="$(
@@ -316,6 +369,18 @@ if [[ -f "${LIGHT_PLIST}" ]]; then
   fi
 fi
 
+# Clean up stale /tmp/openclaw/*.lock files left by crashed ingest scripts.
+# These prevent the next cron invocation from running (AlreadyRunning is raised).
+if script_lock_json="$(clear_stale_script_locks 2>/dev/null)"; then
+  stale_script_locks_cleared="$(
+    python3 -c 'import json,sys; print(int(json.loads(sys.argv[1]).get("cleared", 0)))' \
+      "${script_lock_json}" 2>/dev/null || echo 0
+  )"
+  if [[ "${stale_script_locks_cleared}" -gt 0 ]]; then
+    append_log "{\"event\":\"stale_script_locks_cleared\",\"count\":${stale_script_locks_cleared}}"
+  fi
+fi
+
 # Non-obvious invariant: OpenClaw may leave stale `running` rows/status markers
 # after hard timeouts. Reconcile them each health cycle so queues do not clog.
 if reconcile_json="$(python3 "${SCRIPT_DIR}/reconcile_runtime_state.py" \
@@ -351,6 +416,6 @@ if [[ "${primary_ok}" != true || "${polly_ok}" != true || "${prewarm_ok}" != tru
   status="degraded"
 fi
 
-summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"light_ok\":${light_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"light_restarted\":${light_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered},\"polly_route_reset_applied\":${polly_route_reset_applied}}"
+summary="{\"ts\":\"$(timestamp_utc)\",\"status\":\"${status}\",\"primary_ok\":${primary_ok},\"polly_ok\":${polly_ok},\"light_ok\":${light_ok},\"primary_restarted\":${primary_restarted},\"polly_restarted\":${polly_restarted},\"light_restarted\":${light_restarted},\"prewarm_ok\":${prewarm_ok},\"pending_alerts\":${pending_alerts},\"stale_tasks_marked\":${stale_tasks_marked},\"stale_sessions_cleared\":${stale_sessions_cleared},\"stale_locks_detected\":${stale_locks_detected},\"stale_lock_heal_triggered\":${stale_lock_heal_triggered},\"polly_route_reset_applied\":${polly_route_reset_applied},\"stale_script_locks_cleared\":${stale_script_locks_cleared}}"
 append_log "${summary}"
 printf '%s\n' "${summary}"

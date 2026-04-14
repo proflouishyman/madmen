@@ -24,6 +24,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from script_lock import AlreadyRunning, script_lock
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 OPENCLAW_HOME = Path(os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw"))
 WORKSPACES = OPENCLAW_HOME / "workspaces"
@@ -1088,4 +1090,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        with script_lock("polly-ingest"):
+            main()
+    except AlreadyRunning as exc:
+        # Another polly-ingest instance is already running. Skip this
+        # invocation entirely rather than queuing up or hanging on SQLite.
+        print(json.dumps({"status": "skipped", "reason": str(exc)}), flush=True)
+        sys.exit(0)
