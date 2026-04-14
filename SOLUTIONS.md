@@ -1,3 +1,33 @@
+[2026-04-14] - Polly Rex Contact Lookup: ACP Fabrication + Deterministic Script Fix
+Problem
+When Louis asked Polly to "ask Rex about [person]", Polly wrote fake ACP command strings inline and invented plausible-looking JSON responses with fabricated email addresses (john.doe@example.com, fake@org.edu). The contacts and relationship data were entirely hallucinated.
+Root Cause
+qwen2.5:7b-instruct treats conversational messages like "ask Rex about Lipartito" as a request to generate a response, not to call a tool. Without an explicit exec call in the user message, the model generates text that looks like an ACP response rather than actually calling exec. The model also had no deterministic script to call — the 4-step Rex query pattern existed only as descriptive prose in SOUL.md.
+Solution
+Created scripts/rex_query.py — a deterministic Python script that executes the 4-step Rex lookup (connections.db + polly.db email_threads + contact_signals + commitments/waiting_on) and returns real Telegram-ready output. Added HARD Rule 1 to Polly's SOUL.md with imperative "CALL EXEC IMMEDIATELY" phrasing, FORBIDDEN/CORRECT examples, and explicit prohibition on displaying the command as text. Added Rex Relationship Lookups section to TOOLS.md. Synced both workspace and sandbox SOUL.md/TOOLS.md.
+Notes
+The "CALL EXEC IMMEDIATELY" phrasing (imperative, not descriptive) is critical for qwen2.5:7b. Phrasing like "Execute this command via exec" is ignored. Rex's own sandbox SOUL.md was also stale (old minimal version) — synced workspace to sandbox for rex as well.
+
+[2026-04-14] - polly_ingest Not Writing Live Status To Sandbox SOUL.md
+Problem
+write_sitrep_cache() in polly_ingest.py only wrote the LIVE_STATUS block to the workspace SOUL.md (~/.openclaw/workspaces/polly-workspace/SOUL.md). The sandbox SOUL.md (~/.openclaw/sandboxes/agent-polly-16c13b58/SOUL.md) — the file Polly actually reads during agent runs — was never updated. Polly saw stale Live Status on every run.
+Root Cause
+Single-target write: the original code only wrote to one path (SOUL_MD). Sandbox path was not tracked.
+Solution
+Added SOUL_MD_SANDBOX path constant. Changed write_sitrep_cache() to loop over both [SOUL_MD, SOUL_MD_SANDBOX], writing the LIVE_STATUS block to each. Added graceful skip if either file is missing.
+Notes
+Both files must always be kept in sync after any workspace change. The polly_ingest.py sandbox path is hardcoded to agent-polly-16c13b58 — if the sandbox is recreated with a new hash, the path constant must be updated.
+
+[2026-04-14] - Test Suite: OPENCLAW_HOME Path Resolution in Cowork Sandbox
+Problem
+test_agents.py resolved OPENCLAW_HOME to the Cowork session home (/sessions/.../`.openclaw`) instead of the user's real ~/.openclaw mounted at /sessions/.../mnt/.openclaw. All identity and database checks failed.
+Root Cause
+os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw") in the sandbox resolves to the session's home directory, not the mounted Mac filesystem. The real OpenClaw files are under mnt/.openclaw.
+Solution
+Added a _find_openclaw_home() function that walks candidate paths in priority order and picks the first one that exists AND contains a workspaces/ subdirectory. Added /sessions/.../mnt/.openclaw as a candidate (REPO.parent / ".openclaw"). Also updated run_script() to propagate OPENCLAW_HOME via merged env so subprocesses (rex_query.py) also find the right databases.
+Notes
+Also fixed sandbox_for() to handle missing sandboxes/ directory gracefully (returns None).
+
 [2026-04-13] - Agent Exec Parameter Bugs: elevated, sandbox host, missing ask:off
 Problem
 Multiple agents (backer, rex, otto) had exec calls failing due to wrong parameters: backer added elevated:true spontaneously causing "elevated is not available" errors; rex omitted ask:off causing approval-gateway rejections; otto used host:sandbox causing immediate "exec host=sandbox requires sandbox runtime" errors.
