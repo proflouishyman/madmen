@@ -276,7 +276,37 @@ On every gateway boot, `start_openclaw_gateway_with_kv_checks.sh` injects a one-
 
 ---
 
-## 13. Known Failure Modes and Their Root Causes
+## 13. Polly Lane Timeout and Fallback Behavior
+
+Polly's agent config sets a short `requestTimeoutMs` on the `ollama-polly/qwen2.5:7b-instruct` model. If that timeout is too short (e.g. 3000ms), **every** Telegram request will time out before the model can respond, and OpenClaw silently falls back through the fallback chain:
+
+```
+ollama-polly/qwen2.5:7b-instruct  →  openai-codex/gpt-5.3-codex  →  ollama/gemma4:26b
+```
+
+`fallbackSilent: true` means this happens with no indication to the user. Louis sees a response but it is coming from gemma4:26b, not Polly's intended model.
+
+**Why this causes hallucination**: gemma4:26b responding as a fallback may not correctly receive or apply Polly's SOUL.md bootstrap context. Even with hard rules at the top of SOUL.md, the fallback model generates a plausible-sounding sitrep from training data rather than reading the Live Status block.
+
+**Symptom**: Polly responds with invented calendar events ("Meeting with Client at 9am", "Team Check-In"), invented agent statuses, and doesn't match any real data in the Live Status block.
+
+**Fix**: Set `requestTimeoutMs` to at least 120000ms (2 minutes) on the `ollama-polly/qwen2.5:7b-instruct` model in `openclaw.json` → `agents.defaults.models`. Restart gateway after. This ensures qwen2.5:7b-instruct actually runs rather than immediately timing out.
+
+**The correct value**: 120000ms. Cold-start model load can take 30–60 seconds on first request. 3000ms is only appropriate if the model is guaranteed to already be warm.
+
+---
+
+## 14. approvals.exec.mode Valid Values
+
+`approvals.exec.mode` only accepts: `"session"`, `"targets"`, `"both"`. The value `"off"` is **invalid** and will cause the gateway to refuse to start with a config validation error visible in `gateway.err.log`.
+
+**To disable exec approvals globally**: set `approvals.exec.enabled: false` (and set `mode` to any valid value — it is ignored when disabled). Also set `channels.telegram.execApprovals.enabled: false` or the channel-level setting will override the global one.
+
+**Symptom of invalid mode**: gateway exits immediately on startup; `gateway.err.log` shows `approvals.exec.mode: Invalid input (allowed: "session", "targets", "both")`.
+
+---
+
+## 15. Known Failure Modes and Their Root Causes
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
@@ -291,10 +321,12 @@ On every gateway boot, `start_openclaw_gateway_with_kv_checks.sh` injects a one-
 | Otto AppleScript hangs indefinitely | `every message of inbox whose time received >= cutoff` has no timeout | Wrap in `with timeout of 45 seconds` / `end timeout` block |
 | Exec approval prompts appear in Telegram despite global approvals off | `channels.telegram.execApprovals.enabled: true` overrides global setting | Set `channels.telegram.execApprovals.enabled: false` in openclaw.json |
 | Relationship query returns no email context | Rex only searched connections.db, not polly.db email_threads | Use 4-step Rex query pattern (see §9); ensure maxwell_ingest.py is running |
+| Polly hallucinating sitrep despite correct SOUL.md | `requestTimeoutMs: 3000` on polly lane causes silent fallback to gemma4:26b which ignores bootstrap context | Set `requestTimeoutMs: 120000` on `ollama-polly/qwen2.5:7b-instruct` in `agents.defaults.models` |
+| Gateway refuses to start, config error in gateway.err.log | `approvals.exec.mode: "off"` is invalid | Set `approvals.exec.enabled: false` and `mode: "session"`; restart gateway |
 
 ---
 
-## 14. The "Root Cause or Symptom" Test
+## 16. The "Root Cause or Symptom" Test
 
 Before fixing any issue, ask:
 
