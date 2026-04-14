@@ -154,7 +154,7 @@ This will cause the model to either hallucinate output or use wrong exec params.
 ### Backer — Infrastructure health
 - **backer-health-5m** (every 5m, qwen2.5:7b): deterministic exec of `backer_health_tick.sh`
 - **backer-daily-audit** (2am, qwen2.5:7b): deterministic exec of sqlite3 integrity check + WAL checkpoint
-- **backer-nightly-backup** (2:40am, qwen2.5:7b): deterministic exec of sqlite3 WAL checkpoint
+- **backer-nightly-backup** (2:40am, qwen2.5:7b): WAL checkpoint + runs `backer_backup_tick.sh` → dated backup copies of polly.db and runs.sqlite to `~/.openclaw/backups/`
 
 ### Forge — Coding operations
 - **On-demand only** (no cron)
@@ -245,9 +245,9 @@ Written by `write_morning_digest(conn)` in `polly_ingest.py`, called at the end 
 Two approval settings exist in `openclaw.json` and they interact:
 
 ```json
-// Global (applies to all channels)
+// Global (applies to all channels) — correct config
 "approvals": {
-  "exec": { "mode": "off" }
+  "exec": { "enabled": false, "mode": "session" }
 }
 
 // Per-channel override (OVERRIDES the global setting for Telegram)
@@ -276,7 +276,146 @@ On every gateway boot, `start_openclaw_gateway_with_kv_checks.sh` injects a one-
 
 ---
 
-## 13. Polly Lane Timeout and Fallback Behavior
+## 13. Key File Locations
+
+```
+~/.openclaw/
+  openclaw.json                          — main config (providers, agents, channels, approvals)
+  cron/jobs.json                         — all scheduled cron jobs
+  logs/gateway.log                       — persistent gateway log (rotated)
+  tasks/runs.sqlite                      — OpenClaw internal cron task ledger
+  tasks/runs.sqlite.bak-*               — auto-created backups (used for corruption recovery)
+  backups/polly.db.YYYY-MM-DD           — nightly polly.db backups (kept 7 days)
+  backups/runs.sqlite.YYYY-MM-DD        — nightly runs.sqlite backups (kept 3 days)
+  agents/<agent>/agent/auth-profiles.json   — agentDir auth (TWO locations — see §14)
+  workspaces/<agent>-workspace/
+    SOUL.md                              — agent identity + hard rules (bootstrap context)
+    TOOLS.md                             — exec rules + tool usage (bootstrap context)
+    auth-profiles.json                   — workspace auth (TWO locations — see §14)
+    state/                               — runtime state files
+    memory/                              — intake files (maxwell, otto)
+
+~/openclaw/                              — git repo (code + docs)
+  scripts/
+    polly_ingest.py                      — populates polly.db from intake files
+    maxwell_ingest.py                    — email memory layer (email_threads, contact_signals)
+    backer_health_tick.sh               — 5-min infrastructure health check
+    backer_backup_tick.sh               — nightly db backup
+    otto_outlook_sweep.sh               — Outlook inbox sweep via AppleScript
+    otto_calendar_tick.sh               — Outlook calendar → calendar-today.yaml
+    gcal_today_tick.py                   — Google Calendar → gcal-today.json
+  docs/
+    OPENCLAW_HOW_IT_SHOULD_WORK.md      — this file
+  SOLUTIONS.md                           — bug history (check before fixing anything)
+  CLAUDE.md                              — coding agent rules (read before touching code)
+```
+
+**Live log** (most recent, JSON format): `/tmp/openclaw/openclaw-YYYY-MM-DD.log`
+**Persistent log** (human-readable): `~/.openclaw/logs/gateway.log`
+Always check the live log first for current-session errors — it contains more detail.
+
+---
+
+## 14. Auth Profiles: Two Locations
+
+Every agent has **two** auth-profiles.json files that must both be kept in sync:
+
+| Location | Path |
+|----------|------|
+| Workspace | `~/.openclaw/workspaces/<agent>-workspace/auth-profiles.json` |
+| AgentDir | `~/.openclaw/agents/<agent>/agent/auth-profiles.json` |
+
+OpenClaw reads the **agentDir** file at runtime. The workspace file is the source of truth for editing. If you add a new provider auth entry (e.g. `ollama-light:local`), you MUST patch both files for all affected agents.
+
+**To check which agents are missing an entry:**
+```bash
+python3 -c "
+import json
+from pathlib import Path
+agents = Path('~/.openclaw/agents').expanduser()
+for d in sorted(agents.iterdir()):
+    f = d / 'agent' / 'auth-profiles.json'
+    if f.exists():
+        profiles = json.loads(f.read_text()).get('profiles', {})
+        if 'ollama-light:local' not in profiles:
+            print('MISSING:', d.name)
+"
+```
+
+**Correct entry format** (same for both files):
+```json
+"ollama-light:local": { "type": "api_key", "provider": "ollama-light", "key": "ollama-local" }
+"ollama-polly:local": { "type": "api_key", "provider": "ollama-polly", "key": "ollama-local" }
+```
+
+---
+
+## 15. openclaw.json Key Paths
+
+When modifying `~/.openclaw/openclaw.json`, these are the paths that matter most:
+
+| Path | Purpose | Gotcha |
+|------|---------|--------|
+| `agents.defaults.models["ollama-polly/qwen2.5:7b-instruct"].params.ollama.reliability.requestTimeoutMs` | Polly lane inference timeout | Must be ≥120000; 3000 causes silent fallback |
+| `agents.defaults.models["ollama-light/qwen2.5:7b"].params.ollama.reliability.requestTimeoutMs` | Light lane inference timeout | 60000 is correct |
+| `approvals.exec.enabled` | Global exec approval gate | Set `false` to disable |
+| `approvals.exec.mode` | Approval mode | Must be `"session"`, `"targets"`, or `"both"` — never `"off"` |
+| `channels.telegram.execApprovals.enabled` | Telegram-level override | Overrides global; must also be `false` |
+| `agents.list[id=polly].model.primary` | Polly's primary model | Should be `ollama-polly/qwen2.5:7b-instruct` |
+| `agents.list[id=polly].model.fallbacks` | Polly fallback chain | `fallbackSilent:true` means failures are invisible |
+
+---
+
+## 16. Database Backup and Restore
+
+### Backups
+`backer_backup_tick.sh` runs nightly at 2:40am via `backer-nightly-backup` cron. Uses `sqlite3 .backup` (safe while live). Writes to `~/.openclaw/backups/`.
+
+- `polly.db.YYYY-MM-DD` — kept 7 days
+- `runs.sqlite.YYYY-MM-DD` — kept 3 days
+
+OpenClaw also auto-creates `runs.sqlite.bak-runtime-reconcile-*` files on each startup reconcile.
+
+### Restore polly.db
+```bash
+launchctl stop gui/$(id -u)/ai.openclaw.gateway
+cp ~/.openclaw/backups/polly.db.YYYY-MM-DD ~/.openclaw/workspaces/polly-workspace/polly.db
+launchctl start gui/$(id -u)/ai.openclaw.gateway
+```
+
+### Restore runs.sqlite (after corruption)
+```bash
+launchctl stop gui/$(id -u)/ai.openclaw.gateway
+# Use OpenClaw's auto-backup (most recent)
+ls -t ~/.openclaw/tasks/runs.sqlite.bak-runtime-reconcile-* | head -1
+cp <latest-backup> ~/.openclaw/tasks/runs.sqlite
+launchctl start gui/$(id -u)/ai.openclaw.gateway
+```
+
+### Check integrity before restoring
+```bash
+sqlite3 ~/.openclaw/tasks/runs.sqlite "PRAGMA integrity_check;"
+sqlite3 ~/.openclaw/workspaces/polly-workspace/polly.db "PRAGMA integrity_check;"
+```
+
+---
+
+## 17. Gateway Restart: Safe vs Force
+
+```bash
+# ✅ SAFE — sends SIGTERM, gateway flushes SQLite writes and exits cleanly
+launchctl stop  gui/$(id -u)/ai.openclaw.gateway
+launchctl start gui/$(id -u)/ai.openclaw.gateway
+
+# ⚠️  FORCE — sends SIGKILL, process dies instantly, can corrupt runs.sqlite
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+```
+
+Use safe restart for all config changes. Use force only when the gateway is completely stuck and unresponsive. If you force-kill and the gateway fails to start next time, check `gateway.err.log` and `runs.sqlite` integrity.
+
+---
+
+## 18. Polly Lane Timeout and Fallback Behavior
 
 Polly's agent config sets a short `requestTimeoutMs` on the `ollama-polly/qwen2.5:7b-instruct` model. If that timeout is too short (e.g. 3000ms), **every** Telegram request will time out before the model can respond, and OpenClaw silently falls back through the fallback chain:
 
@@ -296,7 +435,7 @@ ollama-polly/qwen2.5:7b-instruct  →  openai-codex/gpt-5.3-codex  →  ollama/g
 
 ---
 
-## 14. approvals.exec.mode Valid Values
+## 19. approvals.exec.mode Valid Values
 
 `approvals.exec.mode` only accepts: `"session"`, `"targets"`, `"both"`. The value `"off"` is **invalid** and will cause the gateway to refuse to start with a config validation error visible in `gateway.err.log`.
 
@@ -306,7 +445,7 @@ ollama-polly/qwen2.5:7b-instruct  →  openai-codex/gpt-5.3-codex  →  ollama/g
 
 ---
 
-## 15. Known Failure Modes and Their Root Causes
+## 20. Known Failure Modes and Their Root Causes
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
@@ -323,10 +462,13 @@ ollama-polly/qwen2.5:7b-instruct  →  openai-codex/gpt-5.3-codex  →  ollama/g
 | Relationship query returns no email context | Rex only searched connections.db, not polly.db email_threads | Use 4-step Rex query pattern (see §9); ensure maxwell_ingest.py is running |
 | Polly hallucinating sitrep despite correct SOUL.md | `requestTimeoutMs: 3000` on polly lane causes silent fallback to gemma4:26b which ignores bootstrap context | Set `requestTimeoutMs: 120000` on `ollama-polly/qwen2.5:7b-instruct` in `agents.defaults.models` |
 | Gateway refuses to start, config error in gateway.err.log | `approvals.exec.mode: "off"` is invalid | Set `approvals.exec.enabled: false` and `mode: "session"`; restart gateway |
+| "No API key found for provider ollama-light" | agentDir auth-profiles.json missing entry (separate from workspace auth-profiles.json) | Patch both locations for all agents (see §14) |
+| runs.sqlite malformed on startup | Force kill (SIGKILL) mid-write corrupted WAL | Use safe restart; restore from `.bak-runtime-reconcile-*` backup (see §16) |
+| Errors only visible in err.log, not gateway.log | Some startup failures write to gateway.err.log not gateway.log | Always check both; live session errors in `/tmp/openclaw/openclaw-YYYY-MM-DD.log` |
 
 ---
 
-## 16. The "Root Cause or Symptom" Test
+## 21. The "Root Cause or Symptom" Test
 
 Before fixing any issue, ask:
 
