@@ -649,6 +649,10 @@ def cleanup_resolved(conn: sqlite3.Connection, dry_run: bool) -> int:
 # ── Live Status Cache → SOUL.md ───────────────────────────────────────────────
 
 SOUL_MD = WORKSPACES / "polly-workspace" / "SOUL.md"
+# Sandbox path — OpenClaw reads this file at agent runtime, not the workspace copy.
+# polly_ingest must keep BOTH in sync so the Live Status block is never stale in production.
+_OPENCLAW_HOME = Path(os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw"))
+SOUL_MD_SANDBOX = _OPENCLAW_HOME / "sandboxes" / "agent-polly-16c13b58" / "SOUL.md"
 _LIVE_STATUS_START = "<!-- LIVE_STATUS_START -->"
 _LIVE_STATUS_END   = "<!-- LIVE_STATUS_END -->"
 
@@ -744,16 +748,24 @@ def write_sitrep_cache(conn: sqlite3.Connection) -> None:
 {_LIVE_STATUS_END}"""
 
     # ── Write into SOUL.md between markers ───────────────────────────────────
-    soul = SOUL_MD.read_text()
-    if _LIVE_STATUS_START in soul and _LIVE_STATUS_END in soul:
-        before = soul[:soul.index(_LIVE_STATUS_START)]
-        after  = soul[soul.index(_LIVE_STATUS_END) + len(_LIVE_STATUS_END):]
-        SOUL_MD.write_text(before + block + after)
-    else:
-        # Markers missing — append block at end
-        SOUL_MD.write_text(soul.rstrip() + "\n\n" + block + "\n")
+    # Write to BOTH workspace and sandbox copies. OpenClaw reads the sandbox at
+    # agent runtime; the workspace is the source of truth for manual edits.
+    # Keeping them in sync here means polly_ingest is the single writer for the
+    # Live Status block — no manual sync required after each ingest run.
+    for soul_path in [SOUL_MD, SOUL_MD_SANDBOX]:
+        if not soul_path.exists():
+            log.warning("SOUL.md not found at %s, skipping", soul_path)
+            continue
+        soul = soul_path.read_text()
+        if _LIVE_STATUS_START in soul and _LIVE_STATUS_END in soul:
+            before = soul[:soul.index(_LIVE_STATUS_START)]
+            after  = soul[soul.index(_LIVE_STATUS_END) + len(_LIVE_STATUS_END):]
+            soul_path.write_text(before + block + after)
+        else:
+            # Markers missing — append block at end
+            soul_path.write_text(soul.rstrip() + "\n\n" + block + "\n")
 
-    log.info("Sitrep cache written to SOUL.md (%s)", now_utc)
+    log.info("Sitrep cache written to workspace + sandbox SOUL.md (%s)", now_utc)
 
 
 # ── Morning digest pre-assembly ────────────────────────────────────────────────
