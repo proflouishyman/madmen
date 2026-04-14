@@ -297,13 +297,23 @@ On every gateway boot, `start_openclaw_gateway_with_kv_checks.sh` injects a one-
 
 ~/openclaw/                              — git repo (code + docs)
   scripts/
-    polly_ingest.py                      — populates polly.db from intake files
+    openclaw_safe_restart.sh            — safe gateway restart with pre-flight checks (see §17)
+    start_openclaw_gateway_with_kv_checks.sh — launchd entrypoint: config enforcement + lock cleanup + gateway exec
+    setup_light_ollama_lane.sh          — provisions light Ollama instance (port 11436) via launchd
+    apply_polly_resilience_addendum.sh  — enforces Polly lane model routing invariants
+    reconcile_runtime_state.py          — clears stale running/locked task rows in runs.sqlite
+    polly_ingest.py                      — populates polly.db from intake files + writes sitrep cache + morning digest draft
     maxwell_ingest.py                    — email memory layer (email_threads, contact_signals)
-    backer_health_tick.sh               — 5-min infrastructure health check
-    backer_backup_tick.sh               — nightly db backup
-    otto_outlook_sweep.sh               — Outlook inbox sweep via AppleScript
+    maxwell_backfill_tick.py            — quota-aware Gmail historical backfill (one page per tick)
+    rex_sync_contacts.py                — syncs Gmail senders → connections.db with quota backoff
+    backer_health_tick.sh               — 5-min infrastructure health check (all 3 Ollama lanes + locks + reconcile)
+    backer_backup_tick.sh               — nightly db backup (polly.db + runs.sqlite via sqlite3 .backup)
+    otto_outlook_sweep.sh               — Outlook inbox sweep via AppleScript → sweep-log.yaml
     otto_calendar_tick.sh               — Outlook calendar → calendar-today.yaml
     gcal_today_tick.py                   — Google Calendar → gcal-today.json
+    collect_openclaw_metrics.sh         — runtime metrics snapshot (latency, health, model routing)
+    test_reconcile_runtime_state.py     — regression tests for runtime state reconciler
+    test_otto_suite.sh                  — Otto cron integration tests
   docs/
     OPENCLAW_HOW_IT_SHOULD_WORK.md      — this file
   SOLUTIONS.md                           — bug history (check before fixing anything)
