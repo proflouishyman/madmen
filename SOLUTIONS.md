@@ -1,3 +1,13 @@
+[2026-04-14] - gmail-intake-latest.json Bare List Crashes Both Ingestion Scripts
+Problem
+Both polly_ingest.py (ingest_gmail_intake) and maxwell_ingest.py (ingest_gmail) crashed with "AttributeError: 'list' object has no attribute 'get'" when reading gmail-intake-latest.json. Both scripts called data.get(...) without checking whether data was a dict or a list.
+Root Cause
+Maxwell's gmail-sweep-5m cron job (using the gog tool) sometimes writes gmail-intake-latest.json as a bare JSON array ([{...}, {...}]) rather than the expected wrapped dict ({"threads": [...], "timestamp": "..."}). This happens when the model writes only the thread array without adding the wrapper object. Both scripts assumed data was always a dict.
+Solution
+Added isinstance(data, list) guard in both scripts. If data is a list, treat it directly as the thread list with a current UTC timestamp. If data is a dict, use the existing .get("classifications", .get("threads", [])) lookup. Also added _sanitize_json_control_chars() to maxwell_ingest.py (same function already in polly_ingest.py) so both scripts are equally robust against bare control chars in subject lines.
+Notes
+This is a defensive reader fix. The root cause is Maxwell occasionally writing malformed structure — the ideal fix is to make maxwell_ingest.py validate/fix the JSON before saving. For now both readers are robust to both shapes.
+
 [2026-04-14] - Cron Exec Allowlist Denial: Otto and Rex Cron Jobs Failing With security=allowlist
 Problem
 otto-outlook-sweep, otto-calendar-6am, rex-contacts-sync-6h, rex-backfill-365d-20m, gmail-backfill-12m-20m, ingestion-watch-20m, maxwell-gcal-6am, and gmail-sweep-5m cron jobs were producing "exec denied: Cron runs cannot wait for interactive exec approval. Effective host exec policy: security=allowlist ask=on-miss" errors. Otto would then report "the elevated permissions required to execute this script are not currently available" and return without running the script.

@@ -226,8 +226,16 @@ def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
         log.error("Failed to read Gmail intake: %s", exc)
         return 0
 
-    threads = data.get("threads", [])
-    ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+    # Handle two valid shapes Maxwell may produce:
+    #   (a) {"threads": [...], "timestamp": "..."} — standard wrapped dict
+    #   (b) {"classifications": [...], "timestamp": "..."} — Maxwell's gog output key
+    #   (c) [...] — bare list (Maxwell bug: wrote array instead of dict)
+    if isinstance(data, list):
+        threads = data
+        ts = datetime.now(timezone.utc).isoformat()
+    else:
+        threads = data.get("threads", data.get("classifications", []))
+        ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
     count = 0
 
     for thread in threads:

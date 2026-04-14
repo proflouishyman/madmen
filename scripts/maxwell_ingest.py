@@ -110,6 +110,38 @@ _QUESTION_PATTERN = re.compile(r'\?')
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 
+def _sanitize_json_control_chars(text: str) -> str:
+    """Replace bare ASCII control characters inside JSON string literals with a space.
+
+    Maxwell occasionally writes email subjects with literal newlines or other control
+    chars (0x00–0x1F) directly in JSON string values, which json.loads rejects.
+    Walks character-by-character tracking string context; replaces any bare control
+    char found inside a string literal with a space. Structural JSON outside strings
+    is preserved unchanged.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            result.append(ch)
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ord(ch) < 0x20:
+            result.append(' ')
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def stable_id(*parts: str) -> str:
     """Deterministic SHA-256-based ID from parts."""
     return hashlib.sha256(":".join(parts).encode()).hexdigest()[:32]
@@ -302,12 +334,23 @@ def ingest_gmail(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
         return 0
 
     try:
-        data = json.loads(GMAIL_INTAKE.read_text())
+        raw = GMAIL_INTAKE.read_text(encoding="utf-8", errors="replace")
+        # Strip bare control characters from string values (Maxwell intermittently
+        # writes literal newlines in subject fields, causing json.loads to fail).
+        raw = _sanitize_json_control_chars(raw)
+        data = json.loads(raw)
     except (json.JSONDecodeError, OSError) as exc:
         log.error("Failed to read Gmail intake: %s", exc)
         return 0
 
-    threads = data.get("classifications", data.get("threads", []))
+    # Handle two valid shapes Maxwell may produce:
+    #   (a) {"classifications": [...]} — Maxwell's gog output key
+    #   (b) {"threads": [...]}         — legacy/alternate key
+    #   (c) [...]                      — bare list (Maxwell bug: wrote array not dict)
+    if isinstance(data, list):
+        threads = data
+    else:
+        threads = data.get("classifications", data.get("threads", []))
     log.info("Gmail: %d threads in intake", len(threads))
     count = 0
     body_fetches = 0
