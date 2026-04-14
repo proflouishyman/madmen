@@ -478,3 +478,58 @@ Solution
 Two changes: (1) Added orphaned session lock cleanup to start_openclaw_gateway_with_kv_checks.sh — on every startup, scans all agent session directories for .jsonl.lock files whose owning process is dead, and removes them before the gateway takes ownership. (2) Created scripts/openclaw_safe_restart.sh — a comprehensive restart script with phased pre-flight checks: runs.sqlite integrity check with auto-restore from backup, stale session lock cleanup across all agents, Ollama lane health verification with auto-restart via launchd, graceful gateway shutdown with escalation (SIGTERM → direct kill → SIGKILL with --force flag), runtime state reconciliation, and config enforcement. Supports --check (dry run) and --force (SIGKILL stuck processes) flags.
 Notes
 Usage: `bash ~/openclaw/scripts/openclaw_safe_restart.sh` for normal restart, `--check` for dry-run diagnostics, `--force` to SIGKILL stuck processes. The launchd-supervised gateway will respawn after kill -9, so the script handles this by stopping the respawned process before running the startup config enforcer. The root fix for the lock problem is the cleanup in the startup script itself — every gateway boot now guarantees a clean lock state.
+
+[2026-04-13] - Polly Hallucinating Rex Responses: ACP Fabrication Instead of exec
+
+Problem
+When Louis (via Telegram) asked Polly to "ask Rex about [name]" or look up a contact,
+Polly generated plausible-looking ACP command strings and fake JSON responses inline —
+never actually calling exec or contacting Rex. Results like "ken.lipartito@example.com"
+and "John Doe / Jane Smith" were entirely fabricated from training data. Even after
+Roland explicitly said "these are hallucinations" and asked Polly to try again, she
+repeated the same fabrication pattern.
+
+Root Cause
+The qwen2.5:7b-instruct model interprets "ask Rex about X" as a conversational
+instruction, not an exec trigger. It pattern-matches to: generate a plausible narrative
+of what an ACP call and its result would look like. System context (SOUL.md/TOOLS.md)
+instructing ACP delegation is ignored because the user message dominates for small
+models. No exec call was ever made — the ACP command string and JSON response were
+invented in-line in the same model output turn.
+
+This is the same root cause as the sitrep fabrication bug ([2026-04-13] above): small
+models deprioritize system context tool-call instructions when the user message reads
+as a conversational request.
+
+Solution
+1. Created scripts/rex_query.py — a deterministic Python script that:
+   - Takes a name/keyword as a CLI argument
+   - Runs the full 4-step Rex query pattern (OPENCLAW_HOW_IT_SHOULD_WORK.md §9):
+     Step 1: Search connections.db WHERE name_lower LIKE '%term%'
+     Step 2: Join to polly.db email_threads for recent thread history
+     Step 3: Check polly.db email_threads WHERE reply_needed=1
+     Step 4: Check polly.db commitments and waiting_on
+   - Returns a clean Telegram-ready brief with real data
+   - Returns "Rex found no contacts matching..." if nothing found (never invents)
+
+2. Updated Polly SOUL.md — added hard Rule 1 immediately after Rule 0:
+   "When Louis asks about a person, exec python3 rex_query.py NAME with ask:off.
+   Never fabricate. Never simulate ACP. Wait for real stdout and relay it."
+   Includes worked examples showing the exact exec command for 'lipartito' and 'Katherine Howe'.
+
+3. Updated Polly TOOLS.md — added "Rex Relationship Lookups" section before
+   "Command Patterns" with the exact exec command and examples.
+
+The fix follows the established sitrep pattern: instead of relying on the model deciding
+to call a tool, the exact tool invocation is spelled out verbatim in both the rule and
+the TOOLS.md, leaving the model only the task of substituting the NAME token.
+
+Notes
+rex_query.py tested against real connections.db (1867 contacts) and confirmed real
+results for "lipartito" (Ken Lipartito / kenlipartito), "howe" (Katherine Howe ×3,
+George HOWE), and correct "no results" message for nonsense terms.
+email_threads and contact_signals tables currently empty (maxwell_ingest.py email
+memory layer not yet populated), so Steps 2-4 return empty — this is correct behavior,
+not a bug. As maxwell_ingest.py populates polly.db, the brief will automatically
+gain email history without any further changes to rex_query.py.
+Both workspace SOUL.md and TOOLS.md updated. Sandbox sync handled separately.
