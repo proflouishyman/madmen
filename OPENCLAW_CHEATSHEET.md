@@ -10,16 +10,43 @@
 # Status
 launchctl list | grep openclaw
 
-# Restart (full cold restart — sessions start fresh, SOUL.md reloads)
-launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
-
-# Stop / Start
+# ✅ SAFE restart — graceful, allows gateway to flush SQLite writes before exit
 launchctl stop  gui/$(id -u)/ai.openclaw.gateway
 launchctl start gui/$(id -u)/ai.openclaw.gateway
+
+# ⚠️  FORCE restart — only when gateway is stuck/unresponsive
+# Sends SIGKILL (uncatchable). Can corrupt runs.sqlite if mid-write.
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
 > **After restart:** Polly sends a Telegram message "OpenClaw is back online." within ~90s.
 > If nothing comes after 3 minutes, check logs (see below).
+
+### If runs.sqlite gets corrupted after a force restart
+
+```bash
+# 1. Stop the gateway first
+launchctl stop gui/$(id -u)/ai.openclaw.gateway
+
+# 2. Find the most recent clean backup (OpenClaw creates these automatically)
+ls -lt ~/.openclaw/tasks/runs.sqlite.bak-runtime-reconcile-* | head -5
+
+# 3. Restore it
+cp ~/.openclaw/tasks/runs.sqlite.bak-runtime-reconcile-<LATEST> ~/.openclaw/tasks/runs.sqlite
+
+# 4. Restart
+launchctl start gui/$(id -u)/ai.openclaw.gateway
+```
+
+### If polly.db gets corrupted
+
+```bash
+# Restore from nightly backup (kept 7 days)
+launchctl stop gui/$(id -u)/ai.openclaw.gateway
+ls ~/.openclaw/backups/polly.db.*
+cp ~/.openclaw/backups/polly.db.YYYY-MM-DD ~/.openclaw/workspaces/polly-workspace/polly.db
+launchctl start gui/$(id -u)/ai.openclaw.gateway
+```
 
 ---
 
