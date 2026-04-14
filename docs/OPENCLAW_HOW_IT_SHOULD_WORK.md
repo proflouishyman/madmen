@@ -6,30 +6,37 @@ This document describes the intended architecture of OpenClaw and the correct pa
 
 ---
 
-## 0. Governing Principle: Use the Right Layer
+## 0. Governing Principle: Scripts Observe, Agents Act on Exceptions
 
 **The single most important rule in this system:**
 
-> LLM agent turns are for reasoning. Deterministic work runs outside the gateway.
+> Repeated work runs programmatically. Agents are invoked only when there is a problem or an inquiry.
 
-Every time work is routed through an agent turn unnecessarily, you inherit the full cost of LLM inference: model loading latency, exec-parameter generation risk, event loop contention, session lock accumulation, and timeout/retry failure modes. None of that is acceptable for work that doesn't require judgment.
+This is the same principle that governs good monitoring systems: you don't page an on-call engineer for every metric sample — only for anomalies. The monitoring runs unconditionally; the human (or LLM) is the expensive resource reserved for judgment calls. OpenClaw works the same way. Scripts run on timers, detect conditions, and escalate only when something requires reasoning.
 
-**The test**: before adding or keeping a cron job as an `agentTurn`, ask:
+**The four-layer hierarchy:**
 
-1. Does this work require the model to *reason* about something — synthesize, judge, prioritize, compose?
-   → Agent turn is appropriate.
+| Layer | When it runs | Who/what runs it | Examples |
+|-------|-------------|-----------------|---------|
+| **launchd script** | Unconditionally, on a fixed timer | macOS, no gateway | `polly_ingest.py`, `backer_health_tick.sh`, `rex_sync_contacts.py` |
+| **Threshold detection** | Inside the script, on every run | The script itself | Exit non-zero, write escalation file, set error flag |
+| **Agent notification** | Only when a threshold is crossed | Script → ACP or escalation file → agent | Backer pages Polly when a lane is down; ingest flags anomaly |
+| **Telegram / human loop** | Only when Louis needs to know or act | Agent → Telegram | Polly surfaces the escalation in the next digest or immediately if urgent |
 
-2. Does this work execute a fixed script, write a file, run a SQL query, or call a known API with no decisions?
-   → Use launchd directly. The agent should not be involved.
+**Most of the current system skips layers 2 and 3.** Scripts run, agent turns run on schedule regardless of outcome, and Louis gets a digest whether or not anything meaningful happened. The correct version is event-driven: the agent turn fires *because something happened*, not because a clock ticked.
 
-**The two layers:**
+**The practical test**: before adding or keeping a cron job as an `agentTurn`, ask:
 
-| Layer | What it's for | Examples |
-|-------|--------------|---------|
-| **launchd / cron** | Deterministic pipeline work — always the same script, always the same args | `polly_ingest.py`, `maxwell_ingest.py`, `backer_health_tick.sh`, `rex_sync_contacts.py` |
-| **OpenClaw agent turns** | Reasoning work — judgment, synthesis, ACP delegation, Telegram responses | Morning digest assembly, Gmail sweep + classification, Slack summarization, relationship queries |
+1. Does this work require the model to *reason* — synthesize, judge, prioritize, compose?
+   → Agent turn is appropriate, fired by an event or inquiry.
 
-**Why this was violated historically**: OpenClaw's cron system is convenient — one config file, automatic retry, session isolation. It's tempting to use it for everything. But the gateway is a single-threaded async event loop. Blocking it with mechanical script execution during every 20-minute cycle creates contention that starves all reasoning work. The ingest scripts (`polly_ingest.py`, `maxwell_ingest.py`) were originally added as agent turns because the cron mechanism was already there, and the failure modes only became visible at production load.
+2. Does this work execute a fixed script, write a file, run a query, or call a known API with no decisions?
+   → Use launchd directly. No agent involvement unless the script detects an anomaly.
+
+3. Is this agent turn firing on a fixed schedule regardless of whether anything changed?
+   → It's probably doing work that belongs in a script. Move the mechanical part to launchd and have the script escalate only on signal.
+
+**Why this was violated historically**: OpenClaw's cron system is convenient — one config file, automatic retry, session isolation. It's tempting to use it for everything. The failure modes (exec parameter errors, event loop contention, session lock accumulation, timeout cascades) only become visible when multiple high-frequency jobs compete for the same single-threaded event loop simultaneously. Each job seemed fine in isolation.
 
 ---
 
