@@ -11,6 +11,7 @@ Before making any changes, you MUST review:
 
 - AGENTS.md
 - SOLUTIONS.md (project root)
+- /docs/OPENCLAW_HOW_IT_SHOULD_WORK.md — **read this first for all architecture, agent roles, exec rules, model tiers, cron patterns, and known failure modes**
 - Relevant files in /docs
 - Existing code patterns and adjacent modules
 
