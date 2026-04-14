@@ -345,7 +345,7 @@ def test_identity_uhura() -> None:
     check_soul_contains(agent, soul_text, [
         r"communications|comms",
         r"draft.only|approval",
-        r"publish.*without.*approval|no.*publish.*autonom",
+        r"publish.*without.*approval|no.*publish.*autonom|nothing posts without|never.*post.*without",
     ])
     if tools.exists():
         ok(agent, "TOOLS.md exists")
@@ -525,6 +525,7 @@ def test_infra_crons() -> None:
         "rex": ["rex-contacts-sync-6h", "rex-backfill-365d-20m"],
         "otto": ["otto-outlook-sweep", "otto-calendar-6am", "otto-draft-check", "otto-slack-digest"],
         "backer": ["backer-health-5m", "backer-daily-audit", "backer-nightly-backup"],
+        "uhura": ["uhura-post-amplify", "uhura-growth-scan", "uhura-oped-check"],
     }
     for agent, cron_names in required.items():
         check_cron_coverage(agent, cron_names)
