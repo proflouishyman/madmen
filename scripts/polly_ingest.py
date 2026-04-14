@@ -45,11 +45,81 @@ def stable_id(*parts: str) -> str:
 
 
 def ensure_db(db_path: Path) -> sqlite3.Connection:
-    """Open polly.db with WAL mode and foreign keys enabled."""
+    """Open polly.db with WAL mode and create any missing tables including the
+    email memory layer (email_threads, thread_items, contact_signals)."""
     conn = sqlite3.connect(str(db_path), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
+
+    # ── Email memory tables ───────────────────────────────────────────────────
+    # email_threads: one row per email thread, enriched from Maxwell/Otto intake.
+    # Written by maxwell_ingest.py; read by polly_ingest.py and Rex.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS email_threads (
+            id              TEXT PRIMARY KEY,
+            thread_id       TEXT NOT NULL,
+            source          TEXT NOT NULL,
+            from_email      TEXT NOT NULL,
+            from_name       TEXT,
+            subject         TEXT NOT NULL,
+            snippet         TEXT,
+            received_at     DATETIME NOT NULL,
+            last_reply_at   DATETIME,
+            is_direct       INTEGER DEFAULT 0,
+            reply_needed    INTEGER DEFAULT 0,
+            reply_owed_by   TEXT,
+            due_date        DATE,
+            topic_tags      TEXT,
+            classification  TEXT,
+            connection_id   TEXT,
+            processed_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Index for fast per-contact and recency queries by Rex
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_email_threads_from
+        ON email_threads(from_email, received_at DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_email_threads_reply
+        ON email_threads(reply_needed, received_at DESC)
+    """)
+
+    # thread_items: extracted facts (commitments, deadlines, questions) from bodies.
+    # Promoted items flow into the commitments / waiting_on tables.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS thread_items (
+            id              TEXT PRIMARY KEY,
+            thread_id       TEXT NOT NULL,
+            item_type       TEXT NOT NULL,
+            text            TEXT NOT NULL,
+            owner           TEXT,
+            due_date        DATE,
+            promoted        INTEGER DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # contact_signals: per-contact aggregated email intelligence.
+    # Keyed by from_email; joined with Rex connections by email for relationship queries.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS contact_signals (
+            from_email          TEXT PRIMARY KEY,
+            from_name           TEXT,
+            connection_id       TEXT,
+            last_email_at       DATETIME,
+            first_email_at      DATETIME,
+            total_threads       INTEGER DEFAULT 0,
+            direct_threads      INTEGER DEFAULT 0,
+            open_reply_threads  INTEGER DEFAULT 0,
+            topics              TEXT,
+            updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.commit()
     return conn
 
 
@@ -686,6 +756,120 @@ def write_sitrep_cache(conn: sqlite3.Connection) -> None:
     log.info("Sitrep cache written to SOUL.md (%s)", now_utc)
 
 
+# ── Morning digest pre-assembly ────────────────────────────────────────────────
+
+DIGEST_DRAFT = WORKSPACES / "polly-workspace" / "state" / "morning-digest-draft.txt"
+
+def write_morning_digest(conn: sqlite3.Connection) -> None:
+    """Pre-assemble the morning digest text and write it to a file.
+
+    The 7am digest cron just reads this file and sends it — no live SQL queries,
+    no multi-step exec chain, no 26B model doing 7 tool calls under time pressure.
+    Called at the end of every 20-min ingestion run; only the 7am run matters.
+    """
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    today   = datetime.now().strftime("%A, %B %-d")
+    lines   = [f"🌅 *Morning digest — {today}*", ""]
+
+    # ── Calendar ─────────────────────────────────────────────────────────────
+    events = conn.execute(
+        """SELECT datetime, title, prep_required FROM events
+           WHERE status='upcoming'
+             AND date(datetime) >= date('now')
+             AND date(datetime) < date('now','+2 days')
+           ORDER BY datetime ASC LIMIT 15"""
+    ).fetchall()
+    if events:
+        lines.append("📅 *Today's calendar*")
+        for row in events:
+            dt    = (row[0] or "?")[:16]
+            title = row[1] or "(untitled)"
+            prep  = " ⚑ prep needed" if row[2] else ""
+            lines.append(f"  {dt}  {title}{prep}")
+        lines.append("")
+
+    # ── Urgent escalations ────────────────────────────────────────────────────
+    escs = conn.execute(
+        """SELECT summary FROM escalations
+           WHERE status='pending' ORDER BY created_at DESC LIMIT 8"""
+    ).fetchall()
+    if escs:
+        lines.append("🚨 *Urgent*")
+        for r in escs:
+            lines.append(f"  • {r[0]}")
+        lines.append("")
+
+    # ── Tasks due today ───────────────────────────────────────────────────────
+    tasks = conn.execute(
+        """SELECT title, owner_agent FROM tasks
+           WHERE status='open' AND due <= date('now') LIMIT 8"""
+    ).fetchall()
+    if tasks:
+        lines.append("📋 *Due today*")
+        for r in tasks:
+            lines.append(f"  • {r[0]} ({r[1]})")
+        lines.append("")
+
+    # ── Email summary from email_threads ─────────────────────────────────────
+    try:
+        email_counts = conn.execute(
+            """SELECT classification, COUNT(*) as n
+               FROM email_threads
+               WHERE date(received_at) >= date('now','-1 day')
+               GROUP BY classification ORDER BY n DESC"""
+        ).fetchall()
+        reply_due = conn.execute(
+            """SELECT COUNT(*) FROM email_threads
+               WHERE reply_needed=1
+                 AND date(received_at) >= date('now','-7 days')"""
+        ).fetchone()[0]
+        if email_counts:
+            counts_str = "  " + "  ".join(
+                f"{r[0]}: {r[1]}" for r in email_counts
+                if r[0] not in ("spam_or_noise", "noise")
+            )
+            lines.append("✉️ *Email (last 24h)*")
+            if counts_str.strip():
+                lines.append(counts_str)
+            if reply_due:
+                lines.append(f"  ↩ {reply_due} thread(s) need a reply")
+            lines.append("")
+    except Exception:
+        pass  # email_threads may not exist yet on first run
+
+    # ── Pending approvals ─────────────────────────────────────────────────────
+    drafts = conn.execute(
+        """SELECT subject, created_by FROM drafts
+           WHERE status='pending_approval' LIMIT 5"""
+    ).fetchall()
+    if drafts:
+        lines.append("✍️ *Pending approvals*")
+        for r in drafts:
+            lines.append(f"  • {r[0]} (from {r[1]})")
+        lines.append("")
+
+    # ── System health ─────────────────────────────────────────────────────────
+    errors = conn.execute(
+        """SELECT agent_id, last_error FROM agent_health
+           WHERE last_status='error' ORDER BY updated_at DESC LIMIT 5"""
+    ).fetchall()
+    if errors:
+        lines.append("🔧 *System health*")
+        for r in errors:
+            err_note = f" — {r[1]}" if r[1] else ""
+            lines.append(f"  ⚠ {r[0]}{err_note}")
+        lines.append("")
+
+    if len(lines) <= 2:
+        lines.append("  All clear — nothing urgent today.")
+
+    lines.append(f"_Updated {now_utc}_")
+
+    DIGEST_DRAFT.parent.mkdir(parents=True, exist_ok=True)
+    DIGEST_DRAFT.write_text("\n".join(lines) + "\n")
+    log.info("Morning digest draft written (%d lines)", len(lines))
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -719,6 +903,8 @@ def main() -> None:
     # Write current db state into SOUL.md so Polly has it in bootstrap context
     if not args.dry_run:
         write_sitrep_cache(conn)
+        # Pre-assemble morning digest so the 7am cron only needs to read + send
+        write_morning_digest(conn)
 
     conn.close()
 

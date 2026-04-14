@@ -397,3 +397,44 @@ Solution
 Created Telegram bot @Rex_314_bot via BotFather. Added rex route binding to the bindings array (channel:telegram, accountId:rex → agentId:rex). Added rex account under channels.telegram.accounts with botToken, dmPolicy:pairing, allowFrom/groupAllowFrom restricted to Louis's user ID (8162289158), groupPolicy:allowlist, streaming:partial — matching the established pattern used by worf, polly, maxwell, and otto.
 Notes
 Gateway restart required to pick up the new binding and account. Bot description/about/profile picture can be set via BotFather /help commands.
+
+[2026-04-13] - Morning Digest Timeout (968s > 600s max)
+Problem
+polly-morning-digest cron consistently errored with duration 967,678ms (~16 minutes), hitting the 600s timeout. Polly (gemma4:26b) was making 7 sequential exec calls live: 5 SQL queries, 2 file reads, text assembly, then send.
+Root Cause
+The digest cron payload instructed the model to do everything in one isolated session turn: query polly.db, read intake files, assemble text, and send via Telegram. gemma4:26b executes each step sequentially, each exec call adding ~90s of overhead (context load + reasoning + tool dispatch). 7 calls × ~90s = ~630s minimum, plus actual runtime.
+Solution
+Added write_morning_digest(conn) to polly_ingest.py. Called at the end of every 20-minute ingestion run (after write_sitrep_cache). Queries events/escalations/tasks/email_threads/drafts/agent_health and writes a pre-formatted Telegram-ready text file to ~/.openclaw/workspaces/polly-workspace/state/morning-digest-draft.txt.
+
+Updated morning digest cron pipeline:
+- polly-digest-prep (6:55am): runs polly_ingest.py → refreshes polly.db + writes digest draft
+- polly-morning-digest (7:00am): reads draft file via single exec cat → sends to Telegram
+- polly-pre-digest-healthcheck (6:50am): converted from descriptive prose to deterministic exec, timeout reduced from 300s to 180s
+
+Net result: 7am digest cron goes from 7 exec calls to 1 exec call + 1 Telegram send.
+Notes
+The digest draft is always pre-written by every polly_ingest.py run, not just the 6:55am prep job. If polly_ingest.py fails at 6:55, the previous draft (from the 6:40am run) is still available. Draft file is overwritten each run — no rotation needed.
+
+[2026-04-13] - Email Auxiliary Memory Layer
+Problem
+Polly had no memory of who Louis has been emailing, what was discussed, or who needs replies. Rex's connections.db only had structured contact metadata with no communication depth. The "what's going on with X?" query had no email history to draw from.
+Root Cause
+Email data existed only as transient intake files (gmail-intake-latest.json, otto sweep-log.yaml) that were read and discarded. No persistent store captured per-thread classification, reply tracking, or sender-level aggregates. Rex had no email signal to join against.
+Solution
+Three new polly.db tables (email_threads, thread_items, contact_signals) added to ensure_db().
+Created scripts/maxwell_ingest.py (~310 lines):
+- Reads gmail-intake-latest.json + otto sweep-log.yaml
+- Classifies direct vs. newsletter/list using Gmail CATEGORY_PERSONAL label + FROM domain heuristics
+- Fetches full body for up to 8 direct threads per run via `gog gmail messages search "thread:ID"`
+- Extracts reply_needed, due_date, topic_tags per thread
+- Upserts to email_threads + contact_signals, links to Rex connection_id where possible
+- Added maxwell-ingest-30m cron (every 30min, after otto sweep)
+
+Rex updated to query both databases:
+- SOUL.md: "Relationship Queries — How to Answer" section with 4-step SQL pattern
+- TOOLS.md: Database paths section + Relationship Query Pattern with sqlite3 commands
+- Rex is now the canonical interface for "what's going on with [person]?" queries
+
+Polly delegates relationship queries to Rex via ACP rather than querying email tables directly.
+Notes
+Body fetch requires gog with gmail.readonly scope. If gog is unavailable, maxwell_ingest.py falls back gracefully (snippet-only). Gmail labels (CATEGORY_PERSONAL etc.) are the most reliable direct/list classifier — they come from Gmail's own ML, not regex. contact_signals table provides per-sender aggregates (total threads, reply count, last contact) for Rex to surface in relationship briefs without scanning all threads.
