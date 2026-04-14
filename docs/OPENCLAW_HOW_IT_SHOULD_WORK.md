@@ -187,10 +187,96 @@ Located at `~/.openclaw/workspaces/polly-workspace/polly.db`. WAL mode, concurre
 | `waiting_on` | — | Items waiting for third-party response |
 | `captures` | — | Inbox captures |
 | `projects` | — | Project tracking |
+| `email_threads` | id, source, from_email, subject, is_direct, reply_needed, topic_tags, connection_id | Per-thread email memory (Gmail + Outlook) |
+| `thread_items` | id, thread_id, item_type, text, owner, due_date | Action items / commitments extracted from threads |
+| `contact_signals` | from_email, from_name, connection_id, total_threads, direct_threads, open_reply_threads, last_email_at | Per-sender communication aggregates |
+
+### Email memory layer
+
+`email_threads`, `thread_items`, and `contact_signals` are populated by `maxwell_ingest.py` (runs every 30 minutes via `maxwell-ingest-30m` cron). These tables are the email signal layer for relationship intelligence.
+
+`is_direct` classification uses Gmail's `CATEGORY_PERSONAL` label (most reliable) + FROM address heuristics. Only direct threads get full body fetched (max 8 per run, 12s timeout, via `gog gmail messages search "thread:ID"`). Newsletters/lists get snippet only.
+
+`contact_signals` provides per-sender aggregates without scanning all threads — use this for "how often do I hear from X" queries.
+
+`connection_id` links back to Rex's `connections.db` where a match is found by email address in the connections notes field.
 
 ---
 
-## 9. Known Failure Modes and Their Root Causes
+## 9. Rex as Relationship Intelligence Layer
+
+Rex is the canonical interface for "what's going on with [person/org]?" queries. Polly delegates these to Rex via ACP rather than querying email tables directly.
+
+**Rex query pattern** (4 steps, all via `sqlite3` exec):
+1. Search `connections.db` for the contact by name
+2. Join to `polly.db` `email_threads` on `from_email` or `connection_id`
+3. Fetch `contact_signals` row for communication cadence
+4. Check `polly.db` `commitments` and `waiting_on` for open items
+
+Rex has both database paths in its TOOLS.md:
+- `~/.openclaw/workspaces/rex-workspace/connections.db`
+- `~/.openclaw/workspaces/polly-workspace/polly.db`
+
+**When to delegate to Rex**: Any Polly Telegram response involving a specific person, org, or relationship. Rex returns a structured brief; Polly surfaces the summary to Louis.
+
+---
+
+## 10. Morning Digest Architecture
+
+The morning digest runs as a two-stage pipeline to avoid a single long-running turn:
+
+| Time | Job | Model | What it does |
+|------|-----|-------|--------------|
+| 6:50 AM | `polly-pre-digest-healthcheck` | qwen2.5:7b | Deterministic exec: runs `polly_ingest.py` as a health check |
+| 6:55 AM | `polly-digest-prep` | qwen2.5:7b | Deterministic exec: runs `polly_ingest.py` → refreshes polly.db + writes digest draft |
+| 7:00 AM | `polly-morning-digest` | qwen2.5:7b | Deterministic exec: `cat morning-digest-draft.txt` → sends to Telegram |
+
+**Why split**: A single gemma4:26b turn making 7 sequential exec calls (5 SQL + 2 file reads + assemble + send) hit the 600s timeout at ~968s. The split reduces the 7am turn to 1 exec call + 1 Telegram send.
+
+**Draft file**: `~/.openclaw/workspaces/polly-workspace/state/morning-digest-draft.txt`
+Written by `write_morning_digest(conn)` in `polly_ingest.py`, called at the end of every ingest run. If the 6:55am prep fails, the 7am send still uses the previous run's draft (written at 6:40am).
+
+**Never make the 7am cron do live SQL queries** — that's what caused the timeout. All data assembly happens in Python, not in the model turn.
+
+---
+
+## 11. Approval Gate Configuration
+
+Two approval settings exist in `openclaw.json` and they interact:
+
+```json
+// Global (applies to all channels)
+"approvals": {
+  "exec": { "mode": "off" }
+}
+
+// Per-channel override (OVERRIDES the global setting for Telegram)
+"channels": {
+  "telegram": {
+    "execApprovals": { "enabled": false }   // must be false to match global
+  }
+}
+```
+
+**The trap**: `channels.telegram.execApprovals.enabled: true` overrides `approvals.exec.mode: "off"` for all Telegram-originated exec calls. Setting the global to `"off"` is not sufficient — the channel-level setting must also be `false`.
+
+**Symptom**: Polly or any agent prompts Louis to "confirm this exec" via Telegram even though global approvals are disabled.
+
+**Fix**: Set `channels.telegram.execApprovals.enabled: false` in `openclaw.json`, then restart the gateway.
+
+---
+
+## 12. Gateway Startup Notification Pattern
+
+On every gateway boot, `start_openclaw_gateway_with_kv_checks.sh` injects a one-shot cron job (`polly-startup-notify`) that fires ~90 seconds after boot. The job tells Polly to send "OpenClaw is back online." to Louis via Telegram.
+
+**Why 90 seconds**: Models need time to lazy-load after a cold start. Firing immediately results in a timeout or no response.
+
+**Ollama cold start is normal**: `ollama ps` shows blank output after a restart. Models lazy-load on first inference and stay resident due to `OLLAMA_KEEP_ALIVE=-1`. Do not treat blank `ollama ps` as an error.
+
+---
+
+## 13. Known Failure Modes and Their Root Causes
 
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
@@ -200,11 +286,15 @@ Located at `~/.openclaw/workspaces/polly-workspace/polly.db`. WAL mode, concurre
 | Exec fails with "sandbox runtime disabled" | Otto defaults to `host: "sandbox"` | TOOLS.md `host: "gateway"` rule |
 | Exec fails with "allowlist miss" | Model uses `security: "allowlist"` and command isn't in TOOLS.md allowlist | TOOLS.md "NEVER allowlist" rule |
 | Cron times out | Script takes longer than `timeoutSeconds`; or model loops on retries | Increase `timeoutSeconds`; use deterministic exec to prevent retry loops |
+| Morning digest times out at ~968s | gemma4:26b making 7 sequential exec calls in one turn | Use write_morning_digest() to pre-assemble; 7am cron does 1 exec + send only |
 | Otto AppleScript error -1728 | Invalid Outlook API reference (`account list 1`) | Use `drafts folder of default account` |
+| Otto AppleScript hangs indefinitely | `every message of inbox whose time received >= cutoff` has no timeout | Wrap in `with timeout of 45 seconds` / `end timeout` block |
+| Exec approval prompts appear in Telegram despite global approvals off | `channels.telegram.execApprovals.enabled: true` overrides global setting | Set `channels.telegram.execApprovals.enabled: false` in openclaw.json |
+| Relationship query returns no email context | Rex only searched connections.db, not polly.db email_threads | Use 4-step Rex query pattern (see §9); ensure maxwell_ingest.py is running |
 
 ---
 
-## 10. The "Root Cause or Symptom" Test
+## 14. The "Root Cause or Symptom" Test
 
 Before fixing any issue, ask:
 
