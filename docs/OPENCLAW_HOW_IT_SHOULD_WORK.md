@@ -599,3 +599,135 @@ bash ~/openclaw/scripts/install_ingest_launchd.sh --uninstall
 **Rule**: Never add LLM agent turns to the ingest pipeline. Data pipeline work (file I/O, SQLite writes) must run as direct scripts via launchd or cron. LLM agent turns are only appropriate for work that requires reasoning — digests, relationship queries, Slack summarization, ACP delegation.
 
 **Overlap protection**: Both scripts use `script_lock.py` (fcntl-based) so if a slow run is still in progress when the next interval fires, the new invocation exits immediately with `{"status":"skipped"}` rather than queueing and hanging. `backer_health_tick.sh` clears any stale lock files from crashes within the next 5-minute health cycle.
+
+---
+
+## 23. Known Improvement Opportunities
+
+This section is the honest backlog: things that are architecturally wrong, actively fragile, or known to cause reliability problems. It is not a wishlist — every item here has caused or will cause a real failure. Ordered by impact.
+
+---
+
+### 23.1 Remaining Deterministic Cron Jobs Should Move to launchd
+
+**Status**: Not yet migrated. Working but suboptimal.
+
+The following jobs are still in `jobs.json` as `agentTurn` entries even though they execute a fixed script with no reasoning:
+
+| Job | Frequency | Script | Event loop cost |
+|-----|-----------|--------|----------------|
+| `backer-health-5m` | every 5m | `backer_health_tick.sh` | **288 turns/day — highest priority** |
+| `rex-backfill-365d-20m` | every 20m | `rex_sync_contacts.py` | 72 turns/day |
+| `gmail-backfill-12m-20m` | every 20m | `maxwell_backfill_tick.py` | 72 turns/day |
+| `rex-contacts-sync-6h` | every 6h | `rex_sync_contacts.py` | 4 turns/day |
+| `otto-outlook-sweep` | hourly (weekdays) | `otto_outlook_sweep.sh` | ~11 turns/day |
+| `otto-calendar-6am` | daily | `otto_calendar_tick.sh` | 1 turn/day |
+| `maxwell-gcal-6am` | daily | `gcal_today_tick.py` | 1 turn/day |
+| `backer-daily-audit` | daily 2am | sqlite3 shell commands | 1 turn/day |
+| `backer-nightly-backup` | daily 2:40am | `backer_backup_tick.sh` | 1 turn/day |
+
+`backer-health-5m` is the highest-impact migration: it fires 288 times per day, each consuming a qwen2.5:7b inference + event loop slot + session lock. Migrating it to launchd eliminates the single largest source of routine gateway contention.
+
+`rex-backfill-365d-20m` and `gmail-backfill-12m-20m` are tied for second: 72 turns/day each for scripts that run the same command every time.
+
+The migration pattern is established: copy `launchd/com.openclaw.polly-ingest.plist`, adjust `Label`, `ProgramArguments`, and `StartInterval`, run `install_ingest_launchd.sh` equivalent, disable in `jobs.json`.
+
+---
+
+### 23.2 `polly-pre-digest-healthcheck` Is Now Redundant
+
+**Status**: Runs daily at 6:50am. Now a no-op.
+
+This job was designed to run `polly_ingest.py` as a final refresh before the 7am digest. Since `com.openclaw.polly-ingest` now runs every 20 minutes via launchd, polly.db is at most 20 minutes stale at any time. The 6:50am job runs `polly_ingest.py` exactly as the launchd agent would — it adds nothing.
+
+**Recommendation**: Disable `polly-pre-digest-healthcheck` and `polly-digest-prep` (6:55am), and simplify the morning pipeline to:
+
+| Time | Job | Action |
+|------|-----|--------|
+| 7:00am | `polly-morning-digest` | `cat` draft file + send Telegram |
+
+The 7am job already reads from `morning-digest-draft.txt`, which `polly_ingest.py` writes at the end of every launchd run. The 6:50am and 6:55am jobs are belt-and-suspenders from before the launchd agent existed.
+
+**Risk**: If `polly_ingest.py` is broken, the 6:50am agent turn would catch it (it runs the same script). Removing it means a broken ingest script is not discovered until the digest is wrong. Acceptable trade-off — the launchd agent logs to `backer-workspace/logs/polly-ingest.log`, and `backer-health-5m` (once migrated to launchd) will still run every 5 minutes.
+
+---
+
+### 23.3 `otto-slack-digest` Is Timing Out
+
+**Status**: `lastRunStatus: "error"`, `lastDurationMs: 420009` (exactly at timeout), `consecutiveErrors: 1`.
+
+This is a live failure. The job hit its 420s ceiling at the last run. Root causes are likely one or both of:
+
+1. **gemma4:26b cold-start**: If the primary Ollama lane (port 11434) is cold, the model can take 60-90s to load before the first token. A complex multi-tool turn (read Slack channels + summarize + send ACP) then runs into the timeout.
+2. **Slack API rate limiting or slow curl**: The job reads multiple Slack channels via curl. If a channel has high message volume or the Slack API is slow, the turn stalls.
+
+**Recommended fix**: Increase `timeoutSeconds` from 420 to 600. Add a warm-up check: either ensure `backer-health-5m` prewarms port 11434 before 9am, or add a 5-minute pre-Slack-digest job that prewarms the primary lane with a dummy ping.
+
+The deeper fix is to make the Slack reading deterministic (a shell script that curls Slack channels into a file) and have the agent turn only do summarization on pre-fetched data — separating I/O from reasoning, same principle as §0.
+
+---
+
+### 23.4 `otto-outcome-sweep` Ran for 33 Minutes
+
+**Status**: `lastDurationMs: 1995906` (~33 min). `lastRunStatus: "error"`.
+
+The job searches Outlook inbox via AppleScript for reply tracking. The known failure mode (§20) is `every message of inbox whose time received >= cutoff` with no timeout block, causing an indefinite hang on large inboxes. The 33-minute duration confirms this happened.
+
+The fix is already documented in §20 (wrap in `with timeout of 45 seconds`), but it has not been applied to `otto_outlook_sweep.sh` or the AppleScript in this job's message. **This fix is overdue.**
+
+---
+
+### 23.5 No Schema Validation Between Producers and Consumers
+
+**Status**: Unaddressed. Root cause of several past bugs.
+
+Maxwell writes `gmail-intake-latest.json`. Both `polly_ingest.py` and `maxwell_ingest.py` read it. There is no contract between them: the writer can produce a bare array, add unexpected fields, omit required fields, or embed invalid JSON characters — all of which have happened. The fixes applied (`_sanitize_json_control_chars`, `isinstance(data, list)` guard, validated-copy pattern) are defensive reader patches, not enforcement at the source.
+
+**Recommended fix**: Add a `_validate_and_write_intake(data, path)` function to the gmail-sweep agent's output path that enforces a minimal schema before writing:
+- Must be a list or `{"threads": list, "timestamp": str}`
+- Each thread must have at minimum `id`, `from`, `subject`
+- No bare control characters (sanitize before writing, not after reading)
+
+A 20-line JSON Schema check written once eliminates an entire class of reader bugs permanently.
+
+---
+
+### 23.6 Morning Digest Has No Fallback When Draft Is Stale
+
+**Status**: Works today, but fragile if launchd agent stops.
+
+`polly-morning-digest` at 7am reads `morning-digest-draft.txt` and sends it. If the launchd agent stops running (e.g., after a macOS update that resets LaunchAgents), the draft file goes stale and Louis gets yesterday's digest with no indication it's outdated.
+
+**Recommended fix**: `write_morning_digest()` in `polly_ingest.py` already writes a timestamp header. The 7am job should check the file's mtime and, if it's more than 2 hours old, prepend `⚠️ Digest may be stale (last refreshed: <time>)` before sending. A single `stat` + comparison in the cron message is sufficient.
+
+---
+
+### 23.7 Log Rotation Not Configured for launchd Agent Logs
+
+**Status**: New issue introduced with §22 migration.
+
+`polly-ingest.log` and `maxwell-ingest.log` are written to unbounded. With `polly_ingest.py --verbose` writing ~50 lines per run, 20 minutes per run, that's ~3,600 lines/day → ~1.3M lines/year. These files will grow without bound.
+
+**Recommended fix**: Add a `newsyslog` config entry or a weekly truncation in `backer_backup_tick.sh`:
+```bash
+# Truncate ingest logs older than 7 days of lines
+tail -n 10000 ~/.openclaw/workspaces/backer-workspace/logs/polly-ingest.log \
+  > /tmp/polly-ingest.log.tmp && mv /tmp/polly-ingest.log.tmp \
+  ~/.openclaw/workspaces/backer-workspace/logs/polly-ingest.log
+```
+
+---
+
+### 23.8 The Gateway Event Loop Is a Single Point of Contention
+
+**Status**: Structural. Will not be fully resolved without upstream changes to OpenClaw.
+
+All of the above improvements reduce contention but do not eliminate the architectural constraint: the gateway runs one async event loop, and all agent turns — Telegram, cron, ACP — share it. A single long-running gemma4:26b turn (Slack digest, Gmail sweep, outcome sweep) blocks every other callback for its duration.
+
+The mitigations available within the current architecture:
+- Migrate all deterministic work to launchd (§23.1) — eliminates routine contention
+- Separate I/O from reasoning in remaining agent turns (§23.3) — reduces per-turn duration  
+- Ensure heavy models are pre-warmed before long turns fire (§23.3) — reduces cold-start latency
+- Keep `timeoutSeconds` calibrated to actual observed durations, not aspirational ones
+
+The root fix would be multi-worker gateway support (parallel event loops per agent), which is an OpenClaw platform change. File the issue upstream if the single-loop constraint continues causing cascading failures after the above mitigations are applied.
