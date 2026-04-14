@@ -32,7 +32,8 @@ OPENCLAW_HOME = Path.home() / ".openclaw"
 WORKSPACES    = OPENCLAW_HOME / "workspaces"
 POLLY_DB      = WORKSPACES / "polly-workspace" / "polly.db"
 REX_DB        = WORKSPACES / "rex-workspace" / "connections.db"
-GMAIL_INTAKE  = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-latest.json"
+GMAIL_INTAKE           = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-latest.json"
+GMAIL_INTAKE_VALIDATED = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-validated.json"
 OTTO_SWEEP    = WORKSPACES / "otto-workspace" / "state" / "sweep-log.yaml"
 GMAIL_ACCOUNT = "lhyman@gmail.com"
 BODY_FETCH_TIMEOUT = 12   # seconds per gog call
@@ -328,20 +329,62 @@ def lookup_rex_connection(from_email: str, conn_rex: sqlite3.Connection | None) 
 
 def ingest_gmail(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
                  dry_run: bool, skip_body: bool) -> int:
-    """Read gmail-intake-latest.json and upsert email_threads + contact_signals."""
-    if not GMAIL_INTAKE.exists():
+    """Read gmail-intake-latest.json (or validated copy) and upsert email_threads + contact_signals.
+
+    Race condition protection: Maxwell's gmail-sweep-5m cron writes gmail-intake-latest.json
+    directly via the gateway write tool while this script (and polly_ingest.py) may be
+    reading it concurrently. We use a two-file pattern:
+      - gmail-intake-latest.json  — live write target (may be mid-write, partial, malformed)
+      - gmail-intake-validated.json — stable copy written HERE after successful parse
+
+    Readers prefer the validated copy; it is only written after a full successful parse,
+    so it is never partial. If the latest file is newer and parses successfully, it becomes
+    the new validated copy.
+    """
+    # Choose source: prefer validated copy if it's not stale relative to latest
+    import os
+    source_path = GMAIL_INTAKE
+    if GMAIL_INTAKE_VALIDATED.exists():
+        try:
+            latest_mtime = GMAIL_INTAKE.stat().st_mtime if GMAIL_INTAKE.exists() else 0
+            validated_mtime = GMAIL_INTAKE_VALIDATED.stat().st_mtime
+            # Use validated copy if it's newer than or within 5s of latest
+            # (latest may still be being written if it's very new)
+            if validated_mtime >= latest_mtime - 5:
+                source_path = GMAIL_INTAKE_VALIDATED
+                log.debug("Using validated intake copy (mtime delta: %.1fs)",
+                          latest_mtime - validated_mtime)
+        except OSError:
+            pass
+
+    if not source_path.exists() and not GMAIL_INTAKE.exists():
         log.warning("Gmail intake not found: %s", GMAIL_INTAKE)
         return 0
 
+    if not source_path.exists():
+        source_path = GMAIL_INTAKE
+
     try:
-        raw = GMAIL_INTAKE.read_text(encoding="utf-8", errors="replace")
+        raw = source_path.read_text(encoding="utf-8", errors="replace")
         # Strip bare control characters from string values (Maxwell intermittently
         # writes literal newlines in subject fields, causing json.loads to fail).
         raw = _sanitize_json_control_chars(raw)
         data = json.loads(raw)
     except (json.JSONDecodeError, OSError) as exc:
-        log.error("Failed to read Gmail intake: %s", exc)
-        return 0
+        # If latest file failed, fall back to validated copy if we weren't already using it
+        if source_path != GMAIL_INTAKE_VALIDATED and GMAIL_INTAKE_VALIDATED.exists():
+            log.warning("Latest intake malformed (%s); falling back to validated copy", exc)
+            try:
+                raw = GMAIL_INTAKE_VALIDATED.read_text(encoding="utf-8", errors="replace")
+                raw = _sanitize_json_control_chars(raw)
+                data = json.loads(raw)
+                source_path = GMAIL_INTAKE_VALIDATED
+            except (json.JSONDecodeError, OSError) as exc2:
+                log.error("Both intake files unreadable: %s", exc2)
+                return 0
+        else:
+            log.error("Failed to read Gmail intake: %s", exc)
+            return 0
 
     # Handle two valid shapes Maxwell may produce:
     #   (a) {"classifications": [...]} — Maxwell's gog output key
@@ -349,8 +392,13 @@ def ingest_gmail(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
     #   (c) [...]                      — bare list (Maxwell bug: wrote array not dict)
     if isinstance(data, list):
         threads = data
+        normalized = {"timestamp": now_utc(), "threads_scanned": len(data),
+                      "classifications": data}
     else:
         threads = data.get("classifications", data.get("threads", []))
+        normalized = data
+        if "classifications" not in normalized and "threads" in normalized:
+            normalized["classifications"] = normalized.pop("threads")
     log.info("Gmail: %d threads in intake", len(threads))
     count = 0
     body_fetches = 0
@@ -427,6 +475,23 @@ def ingest_gmail(conn: sqlite3.Connection, conn_rex: sqlite3.Connection | None,
     if not dry_run:
         conn.commit()
     log.info("Gmail: %d threads processed, %d bodies fetched", count, body_fetches)
+
+    # Write validated copy after successful parse + process.
+    # This is the race condition guard: readers can safely use gmail-intake-validated.json
+    # which is only written here (after a full, successful parse) and is never mid-write
+    # when a reader picks it up. Use write-to-temp-then-rename for atomicity.
+    if not dry_run and source_path != GMAIL_INTAKE_VALIDATED:
+        try:
+            tmp = GMAIL_INTAKE_VALIDATED.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(normalized, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.rename(GMAIL_INTAKE_VALIDATED)  # atomic on same filesystem
+            log.debug("Validated intake copy written: %s", GMAIL_INTAKE_VALIDATED)
+        except OSError as exc:
+            log.warning("Could not write validated intake copy: %s", exc)
+
     return count
 
 

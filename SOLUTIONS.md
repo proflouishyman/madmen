@@ -1,3 +1,13 @@
+[2026-04-14] - gmail-intake Race Condition: Concurrent Writer and Readers on Same File
+Problem
+gmail-sweep-5m (Maxwell's 30-minute sweep, using gemma4:26b) writes gmail-intake-latest.json via the gateway write tool. ingestion-watch-20m (polly_ingest.py) and maxwell-ingest-30m run concurrently on overlapping schedules. If polly_ingest or maxwell_ingest reads gmail-intake-latest.json while Maxwell is mid-write, they get a partial or corrupt file. This explains the "bare list" crashes (Maxwell writes the array before adding the wrapper object), the "Invalid control character" failures (Maxwell hasn't finished escaping), and intermittent empty ingest runs.
+Root Cause
+No coordination between writer and readers. The gateway write tool writes file contents in a single call but the model may generate a bare array first and then fail to produce the wrapper. Even when generation is correct, there's a window where the file is partial. SQLite has WAL to handle concurrent access; json files have nothing.
+Solution
+Two-layer fix: (1) Write side: updated gmail-sweep-5m cron message to write to gmail-intake-latest.json.tmp first, then run exec mv to atomically rename to gmail-intake-latest.json. mv is atomic on the same filesystem (POSIX rename). (2) Read side: maxwell_ingest.py ingest_gmail() now writes gmail-intake-validated.json after every successful parse+process via write-to-tmp-then-rename (atomic). Both polly_ingest and maxwell_ingest prefer the validated copy when it's not stale (within 5 seconds of latest). If the latest file is malformed, readers fall back to the validated copy automatically.
+Notes
+The validated copy is only written after a full successful parse+ingest, so it is never partial. mtime comparison (validated >= latest - 5s) ensures readers switch to fresh latest file once it's been validated. The 5s grace window is conservative — maxwell_ingest runs take 8-15s typically, so by the time it writes the validated copy, the latest file is always at least 5s old. Update docs: gmail-intake-validated.json is a new stable file in maxwell-workspace/memory/.
+
 [2026-04-14] - gmail-intake-latest.json Bare List Crashes Both Ingestion Scripts
 Problem
 Both polly_ingest.py (ingest_gmail_intake) and maxwell_ingest.py (ingest_gmail) crashed with "AttributeError: 'list' object has no attribute 'get'" when reading gmail-intake-latest.json. Both scripts called data.get(...) without checking whether data was a dict or a list.

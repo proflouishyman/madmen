@@ -29,7 +29,8 @@ OPENCLAW_HOME = Path(os.environ.get("OPENCLAW_HOME", Path.home() / ".openclaw"))
 WORKSPACES = OPENCLAW_HOME / "workspaces"
 
 POLLY_DB = WORKSPACES / "polly-workspace" / "polly.db"
-GMAIL_INTAKE = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-latest.json"
+GMAIL_INTAKE           = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-latest.json"
+GMAIL_INTAKE_VALIDATED = WORKSPACES / "maxwell-workspace" / "memory" / "gmail-intake-validated.json"
 OTTO_SWEEP = WORKSPACES / "otto-workspace" / "state" / "sweep-log.yaml"
 OTTO_CALENDAR = WORKSPACES / "otto-workspace" / "state" / "calendar-today.yaml"
 GCAL_TODAY = WORKSPACES / "maxwell-workspace" / "memory" / "gcal-today.json"
@@ -205,26 +206,53 @@ def ensure_db(db_path: Path) -> sqlite3.Connection:
 # ── Gmail Intake → escalations + tasks ─────────────────────────────────────────
 
 def ingest_gmail_intake(conn: sqlite3.Connection, dry_run: bool) -> int:
-    """Read gmail-intake-latest.json and populate escalations (urgent) and tasks (today)."""
-    if not GMAIL_INTAKE.exists():
-        log.warning("Gmail intake file not found: %s", GMAIL_INTAKE)
+    """Read gmail-intake-latest.json (or validated copy) and populate escalations/tasks.
+
+    Prefers gmail-intake-validated.json when available and not stale — that file is
+    written by maxwell_ingest.py only after a successful full parse, making it safe
+    against the mid-write race condition where gmail-sweep-5m may be writing
+    gmail-intake-latest.json concurrently.
+    """
+    # Pick the best available source file
+    source_path: Path | None = None
+    if GMAIL_INTAKE_VALIDATED.exists():
+        try:
+            latest_mtime = GMAIL_INTAKE.stat().st_mtime if GMAIL_INTAKE.exists() else 0
+            validated_mtime = GMAIL_INTAKE_VALIDATED.stat().st_mtime
+            if validated_mtime >= latest_mtime - 5:
+                source_path = GMAIL_INTAKE_VALIDATED
+        except OSError:
+            pass
+    if source_path is None:
+        source_path = GMAIL_INTAKE
+
+    if not source_path.exists():
+        log.warning("Gmail intake file not found: %s", source_path)
         return 0
 
-    try:
-        raw = GMAIL_INTAKE.read_text(encoding="utf-8", errors="replace")
-        # Maxwell occasionally writes subject lines with literal unescaped control characters
-        # (bare newlines, tabs, etc.) inside JSON string values, producing
-        # "Invalid \escape" or "Invalid control character" parse errors.
-        # Sanitize: replace bare control chars (0x00-0x1F) with safe substitutes.
-        # We do this character-by-character only inside string tokens to avoid
-        # corrupting JSON structure characters. The simplest safe approach:
-        # replace all bare control chars with a space — they only appear in
-        # string values like subject lines where a space is an acceptable substitute.
+    def _try_parse(path: Path):
+        raw = path.read_text(encoding="utf-8", errors="replace")
         raw = _sanitize_json_control_chars(raw)
-        data = json.loads(raw)
+        return json.loads(raw)
+
+    try:
+        data = _try_parse(source_path)
     except (json.JSONDecodeError, OSError) as exc:
-        log.error("Failed to read Gmail intake: %s", exc)
-        return 0
+        # Fallback: if validated copy failed, try latest; if latest failed, try validated
+        alt = GMAIL_INTAKE if source_path == GMAIL_INTAKE_VALIDATED else GMAIL_INTAKE_VALIDATED
+        if alt.exists():
+            log.warning("Primary intake source failed (%s), trying fallback: %s", exc, alt.name)
+            try:
+                data = _try_parse(alt)
+                source_path = alt
+            except (json.JSONDecodeError, OSError) as exc2:
+                log.error("Both intake sources unreadable: %s", exc2)
+                return 0
+        else:
+            log.error("Failed to read Gmail intake: %s", exc)
+            return 0
+
+    log.debug("Gmail intake source: %s", source_path.name)
 
     # Handle two valid shapes Maxwell may produce:
     #   (a) {"threads": [...], "timestamp": "..."} — standard wrapped dict
